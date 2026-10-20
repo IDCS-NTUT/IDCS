@@ -49,6 +49,8 @@ class RoiPipeline:
         self.mapper = ReturnRtpMapper()
         self.active = False
         self.probes = {}
+        roi.managed_window = True
+        roi.probe_state = self.probe_state
         self.identity_live = False
         self.identity_generation = 0
         self.identity_frames = deque(maxlen=128)
@@ -91,7 +93,12 @@ class RoiPipeline:
         if element is None:
             raise RuntimeError(f"ROI pipeline element missing: {name}")
         pad = element.get_static_pad(pad_name)
-        probe_id = pad.add_probe(flags or self.gst.PadProbeType.BUFFER, callback, data)
+        generation = self.roi.generation
+        def scoped(*args):
+            if not self.roi.matches_generation(generation):
+                return self.gst.PadProbeReturn.OK
+            return callback(*args)
+        probe_id = pad.add_probe(flags or self.gst.PadProbeType.BUFFER, scoped, data)
         self.probes[name, pad_name, callback.__name__] = (pad, probe_id)
 
     def detach(self, name, pad_name):
@@ -208,18 +215,23 @@ class RoiPipeline:
                 self.deactivate()
         elif not self.active:
             if not self.roi.commands.empty():
-                self.roi.begin_frame(allow_seed=False)
+                self.roi.begin_frame(allow_seed=False, count_frame=False)
             if self.roi.cache_enabled:
                 self.start()
-        elif (not self.roi.cache_enabled and not self.roi.owns_selection
+        elif (self.roi.retirement_requested or (not self.roi.cache_enabled and not self.roi.owns_selection
                 and not self.roi.selecting and not self.roi.cache._frames
-                and not self.roi.abort_reason and self.roi.native_idle.is_set()):
+                and not self.roi.abort_reason)) and self.roi.native_idle.is_set():
             self.transition = "draining"
             self.roi.draining.set()
             self.transition_started_s = time.monotonic()
             self.block(self.pipeline.get_by_name("mux").get_static_pad("src"))
         self.sync_identity()
-        self.roi.probe_status = dict(roi_probes_active=self.active,
+        self.roi.probe_status = self.probe_state()
+
+    def probe_state(self):
+        # Read the actual graph even while lifecycle() is waiting for a worker.
+        # Cached terminal snapshots can predate activation or detachment.
+        return dict(roi_probes_active=self.active or bool(self.probes),
             roi_identity_probes_active=self.identity_live, roi_probe_transition=self.transition,
             roi_owner_present=self.owner is not None, roi_identity_history_frames=len(self.identity_frames))
 
@@ -269,10 +281,11 @@ class RoiPipeline:
             self.selector_paused = False
         self.roi.counts["probe_deactivations"] += 1
         self.transition = None
-        self.roi.draining.clear()
+        self.roi.finish_window()
         self.unblock()
 
     def receive(self, message):
+        generation = self.roi.generation
         kind = message.get("type")
         cls = {"visual_roi_release_v1": VisualRoiRelease,
                "visual_roi_select_v1": VisualRoiSelect}.get(kind, VisualRoiSeed)
@@ -280,7 +293,7 @@ class RoiPipeline:
         if isinstance(request, VisualRoiSeed):
             if not self.roi.capable or request.tracker_session != self.roi.tracker_session:
                 self.roi._notify(request, False, (self.roi.error or "ROI unavailable")
-                    if not self.roi.capable else "source session mismatch")
+                    if not self.roi.capable else "source session mismatch", generation=generation)
                 return
             identity = SourceIdentity(request.tracker_session, request.frame_id,
                                       request.source_time_ns, request.source_clock_domain)
@@ -288,28 +301,34 @@ class RoiPipeline:
                 ready = identity in self.identity_frames
             if not self.identity_live or not ready or self.transition is not None:
                 self.roi._notify(request, False,
-                    "ROI identity history warming or frame unavailable; open Select box again")
+                    "ROI identity history warming or frame unavailable; open Select box again",
+                    generation=generation)
                 return
-        self.roi.enqueue(message)
+        self.roi.enqueue(message, generation=generation)
         if not self.active and self.transition is None:
             # No streaming router exists yet (or it has drained). Process only
             # routing/control state here, never native/cache resources.
-            self.roi.begin_frame(allow_seed=False)
+            self.roi.begin_frame(allow_seed=False, count_frame=False)
 
     def send_owner_event(self, name):
         # Gst pad send_event/IDLE callbacks can execute on the sending thread.
         # They are not a native-thread ownership guarantee. Dispatch directly
         # to the same executor used by process(), without a Gst stream lock.
-        self.owner_job = self.roi.submit_native(lambda: self._owner_action(name))
+        generation = self.roi.generation
+        self.owner_job = self.roi.submit_native(lambda: self._owner_action(name, generation))
         return True
 
-    def _owner_action(self, name):
+    def _owner_action(self, name, generation=None):
+        if not self.roi.matches_generation(generation):
+            return
         try:
             if name == "idcs-roi-retire":
                 self.roi._abort_on_owner()
-                self.roi.retire()
+                self.roi.retire(generation=generation)
             elif name == "idcs-roi-close":
                 self.roi.close()
+            elif name == "idcs-roi-expire-cache":
+                self.roi.expire_cache(generation=generation)
             else:
                 self.roi.service()
         except Exception as exc:
@@ -534,10 +553,12 @@ class RoiPipeline:
                 self.roi._cancel(str(exc))
                 self.roi.abort_reason = None
                 self.transition = None
+                self.roi.finish_window()
                 self.unblock()
         if (self.transition is None and self.roi.native_owner is not None
                 and (self.service_job is None or self.service_job.done())):
-            self.service_job = self.roi.submit_native(lambda: self._owner_action("service"))
+            generation = self.roi.generation
+            self.service_job = self.roi.submit_native(lambda: self._owner_action("service", generation))
         for queue in (self.roi.messages, self.messages):
             for _ in range(64):
                 try:
@@ -549,7 +570,20 @@ class RoiPipeline:
                         if message.get("type") == "visual_roi_status_v1":
                             # Worker terminal snapshots can wait behind a
                             # newer periodic status. Sequence in wire order.
-                            message["sequence"] = self.roi.next_status_sequence()
+                            current = self.roi.source_status()
+                            if any(message.get(key) != current[key] for key in (
+                                    "roi_window_generation", "roi_probes_active", "roi_owner_present",
+                                    "roi_identity_probes_active", "roi_probe_transition")) or (
+                                    not message.get("roi_probes_active") and any(
+                                        message.get("roi_counts", {}).get(key, 0)
+                                        != current["roi_counts"].get(key, 0)
+                                        for key in ("yolo_frames", "probe_activations"))):
+                                self.roi.counts["status_snapshot_mismatches"] += 1
+                                current["roi_counts"] = dict(self.roi.counts)
+                            terminal = {key: message[key] for key in (
+                                "terminal_request_id", "terminal_selection_id",
+                                "terminal_window_generation", "reason")}
+                            message = dict(current, **terminal)
                         self.pub.send_json(message, flags=zmq.NOBLOCK)
                 except zmq.ZMQError:
                     self.roi.counts["sideband_dropped"] += 1

@@ -84,7 +84,8 @@ def adapter(tmp_path, monkeypatch):
 
 def lock(adapter):
     roi, _, _, _ = adapter
-    select(roi)
+    if roi.selecting is None:
+        select(roi)
     assert not roi.begin_frame()
     assert roi.process(image_frame(), object()) is None
     request = seed(image_frame())
@@ -575,6 +576,8 @@ def test_warmup_seed_refused_and_a_new_lease_requires_its_own_exact_history(pipe
     roi.process(image_frame(), object())
     wire.receive(request.as_message())  # Cached, but never joined to return video.
     assert "identity history warming" in roi.terminal["reason"]
+    assert roi.selecting == lease.selection_id and roi.cache_enabled
+    wire.receive(VisualRoiSelect(lease.selection_id, lease.tracker_session, False).as_message())
     stop_wire(wire)
     start_wire(wire)
     roi.process(image_frame(), object())
@@ -673,6 +676,232 @@ def test_new_lease_queued_during_removal_starts_only_after_original_graph_restor
     wire.close()
 
 
+@pytest.mark.parametrize("ending", ("cancel", "release", "expiry", "missing_frame"))
+def test_new_lease_before_glib_draining_waits_for_complete_retirement(
+        pipeline_wire, adapter, ending):
+    from concurrent.futures import ThreadPoolExecutor
+    wire, _, _ = pipeline_wire
+    roi, _, _, clock = adapter
+    lease = start_wire(wire)
+    if ending == "release":
+        request, _ = lock(adapter)
+    else:
+        roi.process(image_frame(), object())
+    next_lease = VisualRoiSelect(str(uuid.uuid4()), roi.tracker_session, True)
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="fake-gst") as streaming:
+        if ending == "cancel":
+            wire.receive(VisualRoiSelect(lease.selection_id, lease.tracker_session, False).as_message())
+        elif ending == "release":
+            wire.receive(VisualRoiRelease(request.request_id, request.tracker_session).as_message())
+        elif ending == "expiry":
+            clock.t += .6
+        else:
+            streaming.submit(roi.process, None, object()).result(timeout=2.)
+        wire.receive(next_lease.as_message())
+        streaming.submit(roi.service).result(timeout=2.)
+        # This is the missing interleaving: controls arrived before GLib set
+        # draining. The old implementation admitted and then retired this ID.
+        assert wire.transition is None and wire.owner is not None
+        assert roi.selecting is None and not roi.commands.empty()
+        for _ in range(30):
+            clock.t += .1
+            wire.receive(next_lease.as_message())
+            streaming.submit(roi.service).result(timeout=2.)
+        assert not roi._overflow and roi.commands.qsize() == 1
+        old_generation = roi.generation
+        stop_wire(wire)
+        assert roi.generation > old_generation and roi.selecting is None
+        wire.lifecycle()
+        wire.lifecycle()
+        assert roi.selecting == next_lease.selection_id and roi.cache_enabled
+        streaming.submit(roi.process, image_frame(10), object()).result(timeout=2.)
+        assert roi.cache._frames and roi.expired_selection != next_lease.selection_id
+    wire.close()
+    wire.fail.assert_not_called()
+
+
+@pytest.mark.parametrize("late", ("retire", "expire_cache", "retire_seeds", "refuse_seed",
+                                  "owner_retire", "owner_expire", "owner_service", "owner_close",
+                                  "gst_event", "gst_metadata", "native_job", "queued_seed"))
+def test_old_window_event_cannot_touch_an_admitted_successor(
+        pipeline_wire, adapter, native_trace, late):
+    from concurrent.futures import ThreadPoolExecutor
+    wire, elements, _ = pipeline_wire
+    roi, _, _, clock = adapter
+    first = start_wire(wire)
+    old_generation = roi.generation
+    old_request = seed(image_frame())
+    old_probes = {key[2]: pad.probes[probe_id][1]
+                  for key, (pad, probe_id) in wire.probes.items()}
+    wire.receive(VisualRoiSelect(first.selection_id, first.tracker_session, False).as_message())
+    roi.service()
+    successor = VisualRoiSelect(str(uuid.uuid4()), roi.tracker_session, True)
+    wire.receive(successor.as_message())
+    stop_wire(wire)
+    wire.lifecycle()
+    wire.lifecycle()
+    assert roi.generation != old_generation and roi.selecting == successor.selection_id
+    roi.process(image_frame(10), object())
+    pixels = roi.cache._frames[0][1]
+    current_seed = seed(image_frame(10))
+    roi.enqueue(current_seed.as_message())
+    terminal = dict(roi.terminal)
+    expired = roi.expired_selection
+    wire.retired.clear()
+    # An old expiry must not cancel the successor even when its heartbeat is
+    # due. Only that successor's own service/renewal may decide its freshness.
+    clock.t += .6
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="fake-gst") as streaming:
+        def deliver():
+            if late == "retire":
+                roi.retire(generation=old_generation)
+            elif late == "expire_cache":
+                roi.expire_cache(generation=old_generation)
+            elif late == "retire_seeds":
+                roi.submit_native(lambda: roi._retire_seeds("old seeds", generation=old_generation)).result(2.)
+            elif late == "refuse_seed":
+                roi._notify(old_request, False, "old seed refused", generation=old_generation)
+            elif late == "queued_seed":
+                roi.enqueue(old_request.as_message(), generation=old_generation)
+            elif late.startswith("owner_"):
+                name = {"owner_retire": "idcs-roi-retire", "owner_expire": "idcs-roi-expire-cache",
+                        "owner_service": "service", "owner_close": "idcs-roi-close"}[late]
+                wire._owner_action(name, old_generation)
+            elif late == "gst_event":
+                old_probes["owner_event"](None,
+                    NS(get_event=lambda: NS(type="eos", get_structure=lambda: None)), None)
+            elif late == "gst_metadata":
+                old_probes["metadata_probe"](None, NS(get_buffer=lambda: Mock(pts=99)), None)
+            else:
+                roi.submit_native(lambda: roi._native_call(
+                    lambda runtime: runtime._cancel("old native job"), (), {}, old_generation)).result(2.)
+        streaming.submit(deliver).result(timeout=2.)
+    assert roi.selecting == successor.selection_id and roi.expired_selection == expired
+    assert roi.terminal == terminal and not pixels.closed
+    assert roi.cache._frames and roi.commands.qsize() == (2 if late == "queued_seed" else 1)
+    assert roi.barrier_requested.is_set()
+    assert wire.active and wire.owner is elements["roi_owner"]
+    assert not wire.retired.is_set()
+    assert not wire.closed.is_set()
+    # Renew then actually seed the successor, proving this is usable authority.
+    roi.enqueue(successor.as_message())
+    roi.begin_frame()  # Refuse the aged seed, then consume the fresh renewal.
+    assert roi.selecting == successor.selection_id and roi.cache_enabled
+    roi.enqueue(seed(image_frame(10)).as_message())
+    assert roi.begin_frame()
+    for i in range(11, 14):
+        result = roi.process(image_frame(i), object())
+    assert result.snapshot.selection is not None
+    assert roi.expired_selection != successor.selection_id
+    assert roi.counts["stale_window_events"] >= 1
+    wire.close()
+    wire.fail.assert_not_called()
+
+
+@pytest.mark.parametrize("gap_s", (.1, .5, 1.5, 3.))
+@pytest.mark.parametrize("seeded", (False, True))
+def test_five_back_to_back_lease_windows_with_real_retirement(
+        pipeline_wire, adapter, native_trace, gap_s, seeded):
+    from concurrent.futures import ThreadPoolExecutor
+    wire, _, _ = pipeline_wire
+    roi, _, backends, clock = adapter
+    generations = []
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="fake-gst") as streaming:
+        for cycle in range(5):
+            lease = VisualRoiSelect(str(uuid.uuid4()), roi.tracker_session, True)
+            wire.receive(lease.as_message())
+            wire.lifecycle()
+            wire.lifecycle()
+            assert roi.cache_enabled and wire.active and wire.identity_live
+            generations.append(roi.generation)
+            trace_start = len(native_trace)
+            f = image_frame(cycle*100)
+            streaming.submit(roi.process, f, object()).result(timeout=2.)
+            if seeded:
+                request = seed(f)
+                wire.identity_frames.append(SourceIdentity(request.tracker_session, request.frame_id,
+                    request.source_time_ns, request.source_clock_domain))
+                wire.receive(request.as_message())
+                assert streaming.submit(roi.begin_frame).result(timeout=2.)
+            selected = 0
+            for i in range(1, 41):
+                clock.t += .1
+                wire.receive(lease.as_message())
+                streaming.submit(roi.service).result(timeout=2.)
+                result = streaming.submit(roi.process, image_frame(cycle*100+i), object()).result(timeout=2.)
+                if seeded:
+                    selected += result.snapshot.selection is not None
+                else:
+                    assert roi.cache_enabled
+                wire.poll()
+                settle_owner(wire)
+                assert wire.active and roi.source_status()["roi_probes_active"]
+            if seeded:
+                assert selected >= 38 and roi.owns_selection
+                wire.receive(VisualRoiRelease(request.request_id, request.tracker_session).as_message())
+            wire.receive(VisualRoiSelect(lease.selection_id, lease.tracker_session, False).as_message())
+            streaming.submit(roi.service).result(timeout=2.)
+            stop_wire(wire)
+            assert not roi.cache._frames and not wire.active and not roi.selecting
+            assert len({ident for _, ident in native_trace[trace_start:]}) == 1
+            clock.t += gap_s
+    assert generations == sorted(set(generations))
+    assert len(backends) == (5 if seeded else 0)
+    assert roi.counts["probe_activations"] == roi.counts["probe_deactivations"] == 5
+    wire.close()
+    wire.fail.assert_not_called()
+
+
+def test_published_status_reconciles_old_snapshot_with_actual_active_window(pipeline_wire, adapter):
+    wire, _, _ = pipeline_wire
+    roi, _, _, _ = adapter
+    stale = roi.source_status()
+    assert not stale["roi_probes_active"]
+    start_wire(wire)
+    request, _ = lock(adapter)
+    roi.messages.put_nowait(stale)
+    # Lifecycle can return early for in-flight native work. Status must still
+    # consult the real graph, including snapshots queued before activation.
+    entered, finish = threading.Event(), threading.Event()
+    def blocked():
+        entered.set()
+        assert finish.wait(2.)
+    wire.service_job = roi.submit_native(blocked)
+    try:
+        assert entered.wait(2.)
+        wire.poll()
+        statuses = [call.args[0] for call in wire.pub.send_json.call_args_list
+                    if call.args[0]["type"] == "visual_roi_status_v1"]
+        assert statuses
+        for status in statuses:
+            assert status["roi_probes_active"] and status["roi_owner_present"]
+            assert status["roi_window_generation"] == roi.generation
+            assert status["roi_counts"]["probe_activations"] == 1
+            assert status["selection_owner"] == "visual_lock"
+            assert status["active_request_id"] == request.request_id
+        assert roi.counts["status_snapshot_mismatches"] >= 1
+    finally:
+        finish.set()
+        settle_owner(wire)
+    wire.close()
+
+
+def test_timer_controls_do_not_claim_routed_yolo_frames(pipeline_wire, adapter):
+    wire, _, _ = pipeline_wire
+    roi, _, _, _ = adapter
+    lease = start_wire(wire)
+    for _ in range(10):
+        wire.receive(lease.as_message())
+        roi.service()
+    assert roi.counts["yolo_frames"] == 0
+    assert roi.source_status()["roi_selection_id"] == lease.selection_id
+    info = NS(get_buffer=lambda: Mock(pts=1))
+    assert wire.route(None, info, None) == "ok"
+    assert roi.counts["yolo_frames"] == 1
+    wire.metadata_probe(None, info, None)
+    wire.close()
+
+
 def test_loss_detaches_without_waiting_for_another_video_frame(pipeline_wire, adapter):
     wire, _, _ = pipeline_wire
     roi, _, backends, _ = adapter
@@ -767,9 +996,12 @@ def test_release_then_immediate_lease_can_lock_five_times(
                     clock.t += .1
                     wire.receive(lease.as_message())
                     streaming.submit(roi.service).result(timeout=2.)
-                stop_wire(wire)
-                wire.lifecycle()
-                wire.lifecycle()
+            # Cancellation now closes the whole window before either same-
+            # turn or drain-time intent can be admitted to the next window.
+            assert roi.selecting is None and not roi.commands.empty()
+            stop_wire(wire)
+            wire.lifecycle()
+            wire.lifecycle()
             assert roi.cache_enabled and roi.selecting == lease.selection_id
             assert not wire.identity_frames
             identities = {ident for _, ident in native_trace[trace_start:]}
@@ -814,6 +1046,10 @@ def test_release_and_lease_queued_during_catchup(pipeline_wire, adapter, monkeyp
         result.result(timeout=2.)
         settle_owner(wire)
     assert not roi.owns_selection and backends[-1].closed
+    assert roi.selecting is None and not roi.commands.empty()
+    stop_wire(wire)
+    wire.lifecycle()
+    wire.lifecycle()
     assert roi.selecting == next_lease.selection_id and roi.cache_enabled
     status = roi.source_status()
     assert status["terminal_request_id"] == request.request_id and status["reason"]
@@ -1141,7 +1377,12 @@ def test_seed_refusal_and_missing_identity_return_box(adapter, fault):
     roi.process(image_frame(1, source_identity_verified=fault != "unverified"), object())
     assert not roi.owns_selection and not backends
     assert not roi.begin_frame()
-    assert roi.terminal["request_id"] == request.request_id
+    if fault == "stale":
+        assert roi.terminal["reason"] == "ROI lease expired"
+    else:
+        assert roi.terminal["request_id"] == request.request_id
+    assert any(message.get("request_id") == request.request_id and not message["accepted"]
+               for message in roi.messages.queue if message["type"] == "visual_roi_result_v1")
     roi.close()
 
 

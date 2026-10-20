@@ -814,3 +814,85 @@ State at the hand-over (2026-10-20):
   release and successful fresh selection. Actual NVMM/CUDA lifetime, native
   teardown cost, real GStreamer relinking, Pi behaviour and throughput remain
   lab review gates. No motors/HIL are needed or authorized for these gates.
+
+## 2026-10-21 - Seamless ROI round 6: workflow generation isolation (local only)
+
+- Base: `90df2dd` (`lab/seamless-roi-v5`), branch
+  `codex/seamless-roi-handover`. Verification used the dirty candidate on Windows,
+  Python 3.14.4, injected monotonic time, schema-valid deterministic frames and
+  fake Gst/native resources. No model/plant, physical camera, lab host,
+  serial/RS485/bridge/HIL/motor interface, deployment or activation was accessed.
+- `jetson/deepstream/roi_runtime.py` closes admission at cancellation itself,
+  before GLib enters draining. A successor lease stays in the ordered control
+  queue, with adjacent renewals coalesced, until old native retirement, worker
+  shutdown, queue removal and ordinary metadata restoration complete. Different
+  unseeded selection IDs also require complete retirement. Explicit release
+  keeps its same-ID reselect policy; cancel/expiry/loss retain tombstones. The
+  window generation advances only at complete graph restoration. Native jobs,
+  teardown methods, owner actions, attached probes and queued seeds capture/check
+  their originating generation. Old events cannot cancel the successor, evict
+  its cache, set its tombstone or acknowledge its retirement/close. A seed
+  refusal sends its request result without retiring any selection. No automatic
+  tracker restart/reseed or off-owner native destruction was added.
+- `jetson/deepstream/roi_pipeline.py` exposes actual graph state to status reads,
+  including while native work makes lifecycle return early. Queued terminal
+  snapshots refresh live ownership/graph/counter fields at publication, keeping
+  terminal request/selection/reason and `terminal_window_generation`. A stale
+  graph snapshot, or inactive-probe snapshot with advanced routing/activation
+  counters, increments `roi_counts.status_snapshot_mismatches` before correction.
+  Current status names `roi_window_generation`, `roi_window_retiring` and
+  `roi_selection_id`; obsolete events count as `stale_window_events`. Timer-only
+  control processing no longer counts as routed `yolo_frames`/`yolo_skipped`.
+- `tests/test_seamless_roi.py` reproduces admission before GLib draining for
+  cancel, release, expiry and missing identity. Each regression fails on the
+  archived base runtime at the premature-admission assertion (four failures),
+  and passes on the candidate. Further fake-thread tests admit a successor,
+  retain its cached pixels and seed, then deliver old retire, cache expiry,
+  seed retirement/refusal/queued seed, owner retire/expire/service/close, Gst
+  EOS/metadata and native job events. The lease/cache/tombstone survive and
+  the successor actually reaches selected tracking. Existing removal-phase,
+  abort, teardown-owner and fault tests remain. Five fresh leases each run for
+  4 s with 100 ms renewals and 0.1, 0.5, 1.5 or 3 s gaps, both without seeds
+  and with tracking. All five windows acquire cache/track in every case.
+  Status regression publishes an idle snapshot after activation while its
+  worker is blocked, and requires real active graph/ownership and mismatch
+  evidence. A separate test distinguishes timer work from routed frame counts.
+- Final focused command:
+  `python -m pytest -q --capture=sys tests/test_seamless_roi.py tests/test_check_seamless_roi.py tests/test_managed_visual_lock.py tests/test_operator_agent.py tests/test_deepstream_runtime.py tests/test_deepstream_metadata_adapter.py tests/test_return_frame_identity.py tests/test_roi_panel_workflow.py tests/test_live_config.py --tb=short`
+  -> **389 passed, 1 skipped**, 38.88 s. The skip is real synthetic GStreamer
+  queue integration: PyGObject is absent. Tests retain identical idle graphs,
+  no idle native/frame callbacks, both GPU elements bypassed while locked,
+  terminal reasons, isolation of faults, and teardown on the native owner.
+- Full-suite command:
+  `python -m pytest -q --capture=sys --continue-on-collection-errors --tb=short`
+  -> **1531 passed, 58 skipped, 9 failed, 8 collection errors**, 20 subtests,
+  193.45 s. This run preceded only the final additive `roi_selection_id` status
+  field and timer-count regression; the final focused command above covers
+  both. The corresponding untouched-base modules reproduce **65 passed,
+  6 skipped, 9 failed, 8 errors**, 4.11 s. Failure/error names match exactly:
+  two Windows path-casing assertions, five missing Pillow failures, missing
+  trimesh, the absent historical gimbal-fit report, and four gi/four Pillow
+  collection errors. No unavailable dependency is represented as a pass.
+  The baseline command uses the same 14 modules documented in the round-5
+  entry. Base archive/tree and comparison logs are preserved in Windows Temp
+  under `idcs-roi-handover-base-z8cstgpm/` (`admission-regression.txt`,
+  `base-failures.txt`). Candidate logs are
+  `idcs-seamless-roi-handover-full.txt` and
+  `idcs-seamless-roi-handover-focused.txt` in Windows Temp.
+- Check-only `python -m jetson.deepstream.runtime --config configs/base --check`
+  passes with default **false** and unchanged digest
+  `c6d47d1b39a47c47fd4d5300adaf2a81c3da192d9ff23c841a903712760a9de2`.
+  Resolved settings are preserved as
+  `idcs-seamless-roi-handover-config.json` in Windows Temp.
+  Helper `--help`, changed-module compileall and `git diff --check` pass.
+- `docs/visual_lock.md` describes the generation design, supplied round-5
+  measurements (not new local measurements) and round-6 reviewer steps:
+  exclusive off/on/off/on idle A/B, 60 s each; the exact no-seed probe with
+  three fresh lease IDs, 100 ms renewals for 4 s, cancel and 2 s gap (all three
+  must turn cache on); five back-to-back explicit locks at each requested gap
+  (all five must track); and abandonment during warm-up and tracking, cancel,
+  delayed catch-up release and EOS. Preserve statuses/generations/counters,
+  terminal reasons, empty cache/restored graph/resumed selector, advancing
+  video and unchanged PID/session/SSRC. Verify fresh selection after recovery.
+  Actual Jetson timing, NVMM/CUDA lifetime, dynamic Gst recovery and Pi behavior
+  remain reviewer gates; no hardware actuation is needed or authorized.

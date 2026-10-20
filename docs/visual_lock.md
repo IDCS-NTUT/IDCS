@@ -107,8 +107,25 @@ probe/block before reopening mux admission. An expired selection can complete
 this cleanup without another frame. Loss can retire the last ROI frame and
 resume the selector without waiting for a new frame. Dropped metadata gets a
 bounded 2 s drain fallback once native work is idle, without a fatal timeout.
-New leases arriving during removal stay queued until the original graph is
-restored. A runtime drain event gates command consumption on the worker too,
+Every temporary graph has a monotonic workflow generation. Cancellation,
+release, expiry and loss close command admission immediately, before GLib can
+enter `draining`. New leases remain ordered in the command queue, and adjacent
+renewals coalesce there; they never enter `selecting` in the retiring window.
+Replacing an unseeded selection with a different ID also retires its old
+window first. Admission reopens only after native retirement, worker shutdown,
+queue removal and ordinary metadata restoration have all completed. That
+boundary advances the generation. Explicit matching release still allows the
+same selection ID afterwards; cancel/expiry/loss require a fresh ID.
+
+Native jobs, attached callbacks, owner actions and queued seeds carry their
+originating generation. A late retire/expiry/service/close/metadata action from
+an older generation cannot affect the successor's lease, cache, tombstone or
+retirement acknowledgement. Seed refusal is request-scoped and never retires
+the current selection; a seed has no selection ID granting that authority.
+Old seeds receive an explicit refusal and cannot acquire from a successor's
+cache. No tracker is automatically reseeded.
+
+A runtime drain event gates command consumption on the worker too,
 including service/router calls submitted before mux blocking. Old metadata
 does no cache/VPI work while this gate is set. Abort/retirement rejects stale
 seeds but preserves ordered control intent. Adjacent identical leases coalesce
@@ -131,6 +148,16 @@ CUDA input, DCF hold **12,30**, overlay queue and trial defaults are unchanged.
 Owned exits store their request/selection/reason before clearing authority and
 queue a terminal result plus a source-status snapshot. Status sequence numbers
 are assigned again at publication to preserve wire order with periodic status.
+Live status reads the actual graph even while a native job prevents lifecycle
+progress. Queued terminal snapshots refresh their live graph/ownership/counter
+fields at publication, retaining the terminal request/selection/reason and its
+`terminal_window_generation`. A snapshot that disagrees with the current graph
+or claims inactive probes despite advancing routing/activation counters
+increments `roi_counts.status_snapshot_mismatches` before correction. Current
+status includes `roi_window_generation`, `roi_window_retiring` and
+`roi_selection_id`; obsolete actions count as `roi_counts.stale_window_events`.
+Timer-only command processing does not increment `yolo_frames`/`yolo_skipped`;
+those counters now describe router admissions.
 An early empty ROI return also cancels with a reason. Ordinary/orphan metadata
 cannot publish detector ownership while silently retaining a native lock: an
 inconsistent per-buffer route ends ROI with `frame routing ownership unavailable`.
@@ -202,7 +229,7 @@ following non-idle estimates are historical, not new Jetson measurements.
 Cache payload: `16 * 1280 * 720 * 4 = 58,982,400` bytes (56.25 MiB), plus
 pitch/driver overhead. Clone-before-eviction temporarily reaches 17 surfaces
 (59.77 MiB payload); decoder/converter pools and VPI payloads are additional.
-Idle cache memory is zero. **Enabled idle timing equality is not established**.
+Idle cache memory is zero. **Round-6 enabled-idle timing is not measured here**.
 Unchanged frame rate/output and the 16.7 ms budget remain reviewer gates. In
 particular, cold allocation/catch-up can exceed the existing 150 ms source-gap
 or 250 ms freshness budget and visibly lose/refuse the first lock; do not relax
@@ -236,11 +263,13 @@ only the RGBA ROI callback. Per-lock JSONL retains VPI/ROI callback timing.
 Compare identical deterministic inputs with `deepstream.seamless_roi: false`
 as baseline; do not infer GPU kernel time solely from wall-clock probes.
 
-### Round 5 reselection review (no motors)
+### Round 6 reselection review (no motors)
 
-The lead's Jetson round-4 idle measurement met its gate: off 60.19/60.19 fps,
-on 60.19/60.21 fps; infer+metadata p50/p95 11.60/13.35 and 11.62/13.31 ms off,
-11.65/13.38 and 11.59/13.29 ms on. These are supplied bench
+The lead's Jetson round-5 idle measurement met its gate: off 60.18/60.20 fps,
+on 60.20/60.19 fps; infer+metadata p50/p95 11.65/13.37 and 11.62/13.36 ms off,
+11.63/13.32 and 11.65/13.39 ms on. Locked throughput was 59.0-59.3 fps,
+infer+metadata 5.5-5.9 ms and VPI 11.8-12.1 ms, with YOLO skipped. The old
+30-37 ms samples were absent (13-15 ms idle). These are supplied bench
 results, not measurements made by the delegated Windows agent. Repeat the
 off/on/off/on 60 s procedure below first for this candidate, then SIM lifecycle,
 then abandonment, without stacking GPU/video owners.
@@ -263,13 +292,33 @@ Round-5 tests add all four removal phases with late timer work, renewal beyond
 queue capacity, abort during removal, same/new ID release handovers, blocked
 catch-up, five consecutive locks with and without complete graph removal,
 terminal publication on early exits and missing-metadata timing recovery.
+Round-6 tests additionally close the pre-draining admission race for cancel,
+release, expiry and missing identity; they deliver old-generation retirement,
+cache expiry, seed refusals/queued seeds, owner service/close, Gst metadata/EOS
+and native jobs **after** successor admission and verify its cache and lease
+survive and can lock. Five fresh leases run for four seconds each, renewed
+every 100 ms, with 0.1, 0.5, 1.5 and 3 s gaps, both unseeded and tracking.
+Status tests publish a pre-activation snapshot during a blocked worker and
+require current graph/ownership/counters plus a detected mismatch.
+
+Before seeding, repeat the reported minimal lease probe with one client and no
+seed messages. For each of **three** trials, create a fresh `VisualRoiSelect`
+ID in the current tracker session, send `enabled=true` every 0.1 s for 4 s,
+then `enabled=false`, and wait 2 s. Keep the 10 Hz status stream throughout.
+All three trials must turn `roi_cache_enabled=true`, name their own
+`roi_selection_id`, show real active probes and accumulate new cache copies.
+Transitions may still be retiring the preceding window at the next trial's
+start; renewals must survive that teardown and admission must wait for its
+completion. Refuse acceptance if any fresh ID stays retired or cache-off for
+the four-second lease. Preserve generation, terminal generation, transition,
+probe activation/deactivation and snapshot-mismatch counters in the evidence.
 
 For the single slow drone, after confirming the displayed texture still falls
 inside this box, use a fresh report path:
 
 ```sh
 "$PY" -m tools.check_seamless_roi --box 530 247 96 72 \
-  --duration-s 10 --output "$ART/sim-lifecycle-round5.json"
+  --duration-s 10 --output "$ART/sim-lifecycle-round6.json"
 ```
 
 Require `accepted=true`, nonzero `selected_frames`, `detector_returned=true`,
@@ -282,8 +331,10 @@ Ctrl+C. Delivery failures remain explicit in its evidence report; queued ZMQ
 delivery is not an acknowledgement from the runtime.
 
 Then use one client to repeat five lock/release cycles, starting Select box
-about 1.5 s after each preceding release. Preserve separate reports and the
-10 Hz source statuses across every handover, including draining. All **five**
+about 1.5 s after each preceding release. Repeat with 0.1, 0.5 and 3 s gaps,
+including intent received before the preceding window enters draining.
+Preserve separate reports and 10 Hz source statuses across every handover,
+including draining. All **five**
 must track and return to detector ownership. Exercise the Pi panel's Select box
 immediately after Release too. Require new cache copies and a fresh return
 identity window, no old request resurrection, and an explicit terminal reason

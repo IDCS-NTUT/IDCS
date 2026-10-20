@@ -30,7 +30,8 @@ def on_native_owner(method):
     @wraps(method)
     def dispatch(self, *args, **kwargs):
         if self.native_owner is not None and self.native_ident != threading.get_ident():
-            return self.native_owner.submit(self._native_call, method, args, kwargs).result()
+            return self.native_owner.submit(
+                self._native_call, method, args, kwargs, self.generation).result()
         return method(self, *args, **kwargs)
     return dispatch
 
@@ -63,7 +64,7 @@ class RoiRuntime:
         self.pending = self.active = None
         self.acquiring = None
         self.current_frame_id = None
-        self.terminal = {"request_id": None, "reason": None}
+        self.terminal = {"request_id": None, "reason": None, "generation": 0}
         self._reset = False
         self._overflow = False
         self.barrier_requested = threading.Event()
@@ -72,6 +73,12 @@ class RoiRuntime:
         self.native_idle.set()
         self.abort_reason = None
         self.selecting = None
+        # One generation covers admission through complete graph restoration.
+        # Controls can cross this boundary in the queue; seeds/native jobs cannot.
+        self.generation = 0
+        self.managed_window = False
+        self.retirement_requested = False
+        self.probe_state = None
         self.selection_started_s = self.selection_seen_s = 0.0
         self.expired_selection = None
         self.session = None
@@ -125,13 +132,30 @@ class RoiRuntime:
         if self.native_owner is None:
             self.native_owner = ThreadPoolExecutor(max_workers=1, thread_name_prefix="roi-native")
 
-    def _native_call(self, method, args, kwargs):
+    def _native_call(self, method, args, kwargs, generation):
+        if not self.matches_generation(generation):
+            return None
         self.native_ident = threading.get_ident()
         return method(self, *args, **kwargs)
 
     def submit_native(self, action):
         self.start_native_owner()
-        return self.native_owner.submit(self._native_call, lambda _: action(), (), {})
+        return self.native_owner.submit(
+            self._native_call, lambda _: action(), (), {}, self.generation)
+
+    def matches_generation(self, generation):
+        if generation is None or generation == self.generation:
+            return True
+        self.counts["stale_window_events"] += 1
+        return False
+
+    def finish_window(self):
+        """Called only after worker shutdown and ordinary graph restoration."""
+        if self.owns_selection or self.selecting is not None:
+            raise RuntimeError("ROI window restored before selection retirement")
+        self.generation += 1
+        self.retirement_requested = False
+        self.draining.clear()
 
     def stop_native_owner(self):
         if self.native_owner is not None:
@@ -173,7 +197,7 @@ class RoiRuntime:
             return
         if self.draining.is_set():
             return
-        self.begin_frame(allow_seed=False)
+        self.begin_frame(allow_seed=False, count_frame=False)
         if self.selecting is not None and not self.lease_live:
             self._cancel("ROI lease expired")
         if self._reset:
@@ -182,7 +206,7 @@ class RoiRuntime:
         if not self.owns_selection and not self.cache_enabled:
             self.expire_cache()
 
-    def enqueue(self, message):
+    def enqueue(self, message, *, generation=None):
         try:
             kind = message.get("type")
             cls = {"visual_roi_release_v1": VisualRoiRelease,
@@ -193,9 +217,11 @@ class RoiRuntime:
                 # adjacent renewals without crossing a release/cancel/seed.
                 with self.commands.mutex:
                     if self.commands.queue and self.commands.queue[-1][0] == command:
-                        self.commands.queue[-1] = (command, self.clock())
+                        self.commands.queue[-1] = (command, self.clock(), None)
                         return
-            self.commands.put_nowait((command, self.clock()))
+            self.commands.put_nowait((command, self.clock(),
+                (self.generation if generation is None else generation)
+                if isinstance(command, VisualRoiSeed) else None))
             if isinstance(command, VisualRoiSeed):
                 self.barrier_requested.set()
         except Full:
@@ -207,13 +233,12 @@ class RoiRuntime:
         except (ValueError, TypeError, AttributeError):
             self.counts["invalid_commands"] += 1
 
-    def _notify(self, request, accepted, reason):
-        if not accepted:
+    def _notify(self, request, accepted, reason, *, generation=None):
+        # Refusal is request-scoped. A seed has no selection ID on the wire;
+        # never infer authority to retire the current lease from its arrival.
+        if not accepted and self.matches_generation(generation) and not self.owns_selection:
             self.terminal = dict(request_id=request.request_id,
-                                 selection_id=self.selecting, reason=reason)
-            if not self.owns_selection:
-                self.expired_selection = self.selecting or self.expired_selection
-                self.selecting = None
+                                 selection_id=None, reason=reason, generation=self.generation)
         try:
             self.messages.put_nowait(dict(type="visual_roi_result_v1",
                 request_id=request.request_id, frame_id=request.frame_id,
@@ -223,11 +248,15 @@ class RoiRuntime:
 
     def _cancel(self, reason, *, allow_reselect=False):
         request = self.active or self.acquiring or (self.pending[0] if self.pending else None)
+        if self.managed_window and (request is not None or self.selecting is not None):
+            # Close admission at cancellation, before GLib notices an empty
+            # window. Later controls remain ordered/coalesced for its successor.
+            self.retirement_requested = True
         # Store the terminal before dropping ownership; readers on other
         # threads must never observe an unexplained ownership exit.
         if request is not None or self.selecting is not None:
             self.terminal = dict(request_id=None if request is None else request.request_id,
-                                 selection_id=self.selecting, reason=reason)
+                                 selection_id=self.selecting, reason=reason, generation=self.generation)
         if request is not None:
             self._notify(request, False, reason)
         self.active = self.pending = None
@@ -246,15 +275,16 @@ class RoiRuntime:
             self.counts["messages_dropped"] += 1
 
     def _refuse_select(self, request, reason):
-        self.terminal = dict(request_id=None, selection_id=request.selection_id, reason=reason)
+        self.terminal = dict(request_id=None, selection_id=request.selection_id,
+                             reason=reason, generation=self.generation)
         self._publish_terminal()
 
     @on_native_owner
-    def begin_frame(self, *, allow_seed=True):
+    def begin_frame(self, *, allow_seed=True, count_frame=True):
         """Decide routing; retire a cancelled payload before reopening YOLO."""
         # Checked on the worker, not just at submission on GLib/Gst. Calls
         # already queued at the start of removal cannot consume the next lease.
-        if self.draining.is_set():
+        if self.draining.is_set() or self.retirement_requested:
             return False
         if self.abort_reason is not None:
             if self.native_owner is not None:
@@ -270,12 +300,21 @@ class RoiRuntime:
             with self.commands.mutex:
                 if not self.commands.queue:
                     break
-                if self.draining.is_set():
+                if self.draining.is_set() or self.retirement_requested:
                     break
                 if not allow_seed and isinstance(self.commands.queue[0][0], VisualRoiSeed):
                     break
-                request, received_s = self.commands.queue.popleft()
-                self.commands.not_full.notify()
+                request, received_s, generation = self.commands.queue[0]
+                superseded = (self.managed_window and self.selecting is not None
+                    and not self.owns_selection and isinstance(request, VisualRoiSelect)
+                    and request.enabled and request.tracker_session == self.tracker_session
+                    and request.selection_id not in (self.selecting, self.expired_selection))
+                if not superseded:
+                    self.commands.queue.popleft()
+                    self.commands.not_full.notify()
+            if superseded:
+                self._cancel("ROI selection superseded")
+                break
             current = self.active or self.acquiring or (self.pending[0] if self.pending else None)
             if isinstance(request, VisualRoiSelect):
                 if request.tracker_session != self.tracker_session:
@@ -299,6 +338,9 @@ class RoiRuntime:
                 if (current is not None and request.request_id == current.request_id
                         and request.tracker_session == current.tracker_session):
                     self._cancel("operator released visual lock", allow_reselect=True)
+            elif not self.matches_generation(generation):
+                self._notify(request, False, "ROI identity history retired; open Select box again",
+                             generation=generation)
             elif not self.capable:
                 self._notify(request, False, self.error or "ROI unavailable")
             elif self.owns_selection:
@@ -320,7 +362,8 @@ class RoiRuntime:
             self._close_lock()
             self._reset = False
         self.yolo_skipped = self.owns_selection
-        self.counts["yolo_skipped" if self.yolo_skipped else "yolo_frames"] += 1
+        if count_frame:
+            self.counts["yolo_skipped" if self.yolo_skipped else "yolo_frames"] += 1
         return self.yolo_skipped
 
     @on_native_owner
@@ -355,8 +398,10 @@ class RoiRuntime:
             print(f"[deepstream.roi] {self.error}; YOLO remains available", flush=True)
 
     @on_native_owner
-    def expire_cache(self):
+    def expire_cache(self, *, generation=None):
         """Native-owner task also expires caches when video has stopped."""
+        if not self.matches_generation(generation):
+            return
         if self.owns_selection or self.cache_enabled:
             return
         if self.owner_ident is not None and self.owner_ident != threading.get_ident():
@@ -368,30 +413,41 @@ class RoiRuntime:
         self._reset = False
 
     @on_native_owner
-    def retire(self):
+    def retire(self, *, generation=None):
         """Release resources on their worker before removing the drained graph."""
+        if not self.matches_generation(generation):
+            return
         if self.owner_ident is not None and self.owner_ident != threading.get_ident():
             raise RuntimeError("ROI retirement moved off its frame owner")
         if self.owns_selection:
             raise RuntimeError("ROI retirement attempted during a lock")
+        if self.selecting is not None:
+            self._cancel("ROI window retired")
         self._close_lock()
         self._reset = False
         self.owner_ident = None
-        self._retire_seeds("ROI identity history retired; open Select box again")
+        self._retire_seeds("ROI identity history retired; open Select box again", generation=generation)
 
-    def _retire_seeds(self, reason):
+    def _retire_seeds(self, reason, *, generation=None):
         # Video can stop with an unconsumed heartbeat/seed in the router queue.
         # Keep control intent for the next lifecycle, but an old-window seed
         # must neither hold probes forever nor acquire from a new lease/cache.
+        if not self.matches_generation(generation):
+            return
         with self.commands.mutex:
-            seeds = [item[0] for item in self.commands.queue if isinstance(item[0], VisualRoiSeed)]
-            controls = [item for item in self.commands.queue if not isinstance(item[0], VisualRoiSeed)]
+            seeds = [item[0] for item in self.commands.queue
+                     if isinstance(item[0], VisualRoiSeed) and item[2] == self.generation]
+            controls = [item for item in self.commands.queue
+                        if not isinstance(item[0], VisualRoiSeed) or item[2] != self.generation]
             self.commands.queue.clear()
             self.commands.queue.extend(controls)
             self.commands.not_full.notify_all()
-        self.barrier_requested.clear()
+        if any(isinstance(item[0], VisualRoiSeed) for item in controls):
+            self.barrier_requested.set()
+        else:
+            self.barrier_requested.clear()
         for request in seeds:
-            self._notify(request, False, reason)
+            self._notify(request, False, reason, generation=generation)
 
     @on_native_owner
     def process(self, frame, buffer, *, decoded_pts_ns=None):
@@ -425,6 +481,8 @@ class RoiRuntime:
             if self._reset:
                 self._close_lock()
                 self._reset = False
+            if self.retirement_requested:
+                return None
             if not self.capable:
                 return None
             expected_domain = "jetson_monotonic" if self.source == "camera" else "pc_monotonic"
@@ -525,7 +583,11 @@ class RoiRuntime:
         return PerceptionSnapshotV2(sequence=frame.frame_id, frame=frame)
 
     def status(self):
-        return dict(**self.probe_status, roi_capable=self.capable, roi_error=self.error,
+        probes = self.probe_status if self.probe_state is None else self.probe_state()
+        return dict(**probes, roi_window_generation=self.generation,
+            roi_window_retiring=self.retirement_requested,
+            roi_selection_id=self.selecting,
+            roi_capable=self.capable, roi_error=self.error,
             roi_active=self.owns_selection and self.abort_reason is None,
             roi_request_id=None if self.active is None or self.abort_reason is not None else self.active.request_id,
             frame_work_ms=self.frame_pipeline_ms, roi_frame_work_ms=self.frame_work_ms, vpi_ms=self.vpi_ms,
@@ -556,6 +618,7 @@ class RoiRuntime:
             roi_frame_id=self.current_frame_id,
             terminal_request_id=terminal["request_id"], reason=terminal["reason"],
             terminal_selection_id=terminal.get("selection_id"),
+            terminal_window_generation=terminal.get("generation", self.generation),
             **self.status())
 
     @on_native_owner

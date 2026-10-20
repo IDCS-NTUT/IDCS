@@ -149,6 +149,9 @@ def robust_similarity(a, b, threshold):
     return matrix, offset, mask
 
 
+DEFAULT_DCF_HOLD = "12,30"
+
+
 class VisualLock:
     """One explicit seed, one source session, no automatic detector fallback.
 
@@ -158,13 +161,14 @@ class VisualLock:
     """
     def __init__(self, gates: Gates = Gates()):
         self.gates = gates
-        # Trial switch IDCS_VPI_DCF_HOLD="<psr floor>,<max frames>" (default off):
-        # while a tracking lock is starved of features (review 2026-10-20: DCF
-        # PSR 11-15 at every loss), hold it on the DCF alone for a bounded run
-        # of frames, size frozen and no template learning.
+        # IDCS_VPI_DCF_HOLD="<psr floor>,<max frames>" (default 12,30; "off"
+        # disables): while a tracking lock is starved of features (review
+        # 2026-10-20: DCF PSR 11-15 at every loss), hold it on the DCF alone for
+        # a bounded run of frames, size frozen and no template learning. Floor
+        # 10 drifted onto the wrong target on the review set; 14 lost the gain.
         self.hold_psr = self.hold_max = None
-        raw = os.environ.get("IDCS_VPI_DCF_HOLD")
-        if raw:
+        raw = os.environ.get("IDCS_VPI_DCF_HOLD", DEFAULT_DCF_HOLD)
+        if raw != "off":
             try:
                 psr, frames = raw.split(",")
                 self.hold_psr, self.hold_max = float(psr), int(frames)

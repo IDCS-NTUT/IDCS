@@ -48,6 +48,17 @@ input capture remains unsupported; its empty input files are not evidence.
 GPU OSD labels managed SIM as SIM MOUNT and camera as SHADOW; CONTROL OFF
 continues to identify isolated trials. These labels do not prove applied motion.
 
+DCF-only hold (default since 2026-10-20): a **tracking** lock that runs short
+of feature points (insufficient forward/backward features, degenerate
+geometry, inconsistent motion or insufficient spread) stays on the DCF
+position for up to 30 frames while PSR >= 12 and the DCF jump stays within the
+disagreement limit. Size is frozen, the template does not learn, surviving
+points are kept so replenishment refills; any normal frame resets the run.
+`IDCS_VPI_DCF_HOLD=<psr>,<frames>` overrides it, `off` disables it. Review
+set: one clip went from lost at frame 50 to fully tracked, others gained a few
+frames, fixtures unchanged, no timing cost; floor 10 drifted onto the wrong
+target, so do not lower it without truth-scored evidence. See `docs/journal.md`.
+
 Managed evidence is under `/var/lib/idcs/visual-lock/{camera,sim}/session-*`.
 Sessions rotate within a **4 GB budget per source**: before a new session the
 oldest `session-<hex>` directories in that root are deleted until the kept ones

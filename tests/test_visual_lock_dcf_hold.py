@@ -25,8 +25,11 @@ def _starved(lock, psr=15., dx=2.):
     return proposal(lock, dx=dx, psr=psr, fb=fb)
 
 
-def test_off_by_default_starvation_rejects(monkeypatch):
+def test_on_by_default_and_off_restores_the_reject(monkeypatch):
     lock = _tracking(monkeypatch, None)
+    assert (lock.hold_psr, lock.hold_max) == (12., 30)
+    assert lock.evaluate(frame(4), _starved(lock)).accepted
+    lock = _tracking(monkeypatch, "off")
     d = lock.evaluate(frame(4), _starved(lock))
     assert not d.accepted and d.state == "uncertain"
 

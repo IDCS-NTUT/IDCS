@@ -50,7 +50,31 @@ fresh `sim_hud_session` from the PC producer. Missing/stale identity hides geome
 instead of substituting detector identity. The last recorded deploy-84 scene is Swarm; live state is in the host manifests.
 Physical panel switching acceptance remains deferred to the user at the bench.
 
-## Managed visual lock (2026-10-20 candidate)
+## Resident visual lock (2026-10-20 review candidate)
+
+In normal **Camera** and **Simulator** (Single or Swarm), Targets adds
+**Select box**, **Release** and **Box size** when the normal runtime reports
+fresh ROI capability. Confirming a box gives ROI selection authority inside
+the existing video process: YOLO/NvDCF stop receiving frames until release or
+loss, then YOLO resumes. Source mode, process, encoder and return session stay
+the same. While ROI owns selection, detector planner/classes/lock and score
+actions are suppressed. Idle detector controls remain available alongside box
+selection. Missing release-native libraries leave normal YOLO working and hide
+the unavailable box action.
+
+All Manual/GPIO12, freshness, E-stop, exact displayed-frame identity, presets,
+refusal and new-readable-OFF rules below apply unchanged. Release/loss returns
+the editor's box; there is no automatic reseed. In normal modes the explicit
+return to YOLO is part of this workflow. Single's software controller receives
+the Jetson ROI selection through its existing loopback publisher; Swarm and
+camera shadow already use the normal Jetson V2 port. Only a fresh accepted SIM
+lease grants simulated auto-follow; physical ROI auto-block is unchanged.
+
+This is locally tested candidate code, not live acceptance. Cold acquisition,
+idle overhead, return continuity and native teardown still require the exact
+[Jetson/SIM/Pi/camera reviewer checklist](visual_lock.md#exact-reviewer-checklist-for-this-candidate-no-motors).
+
+## Managed visual lock fallback (2026-10-20)
 
 Operations -> Source & scene adds **Camera / Visual lock** and
 **Simulator -> Visual lock**. They replace the detector video owner; switching

@@ -141,6 +141,9 @@ def test_all_21_systemd_stacks_validate_and_keep_base_effective_values():
         # This release adds exactly the dedicated config link, a restart key.
         if "net" in after:
             assert after["net"].pop("zmq_config_link") == "tcp://192.168.0.5:5598"
+        # Resident ROI is the one new DeepStream restart-tier capability flag.
+        if "deepstream" in after:
+            assert after["deepstream"].pop("seamless_roi") is True
         # Pi return-video recording (2026-10-20), a restart-tier addition.
         display = (after.get("rpi") or {}).get("operator_display") or {}
         if "recording" in display:

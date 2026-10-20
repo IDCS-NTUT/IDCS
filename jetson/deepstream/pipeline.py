@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from common.perception import NormalizedBoxV2, PerceptionTrackV2, TrackAssessmentV2
+from common.perception import NormalizedBoxV2, PerceptionTrackV2, RoiStateV2, TrackAssessmentV2
 from common.rtp_identity import parse_rtp_identity
 from common.shutdown import install_signal_handlers
 from common import ui_style as ui_theme
@@ -186,6 +186,8 @@ class VerificationStats:
     health_file: Path | None = None
     _last_health_write_s: float = 0.0
     live_settings: Any = None
+    roi: Any = None
+    roi_pipeline: Any = None
 
     def current_pipeline_fps(self) -> float:
         return self.frames / max(time.monotonic() - self.started_at_s, 1e-9)
@@ -221,6 +223,7 @@ class VerificationStats:
                     "pipeline_fps": round(self.current_pipeline_fps(), 3),
                     "return_frames": self.return_frames,
                     "return_fps": round(self.return_frames / elapsed_s, 3),
+                    **({} if self.roi is None else self.roi.status()),
                     **({} if self.live_settings is None else self.live_settings.status()),
                 }) + "\n", encoding="utf-8")
                 temporary.replace(self.health_file)
@@ -377,6 +380,7 @@ def _pipeline_description(
     return_iframe_interval: int = 1,
     return_feedback_port: int = 5003,
     return_sender_report_port: int = 5004,
+    seamless_roi: bool = False,
 ) -> str:
     if input_file is not None and "'" in str(input_file):
         raise ValueError("input path cannot contain a single quote")
@@ -466,7 +470,9 @@ def _pipeline_description(
         source
         + mux
         + f"nvinfer name=primary config-file-path={nvinfer_config.resolve()} {tracker_element}"
-        + tail
+        + (tail.replace("! nvvideoconvert name=osd_rgba_convert",
+                        "! queue name=roi_owner max-size-buffers=1 max-size-bytes=0 max-size-time=0 ! nvvideoconvert name=osd_rgba_convert", 1)
+           if seamless_roi else tail)
     )
 
 
@@ -676,6 +682,8 @@ def _metadata_probe(
                 if snapshot_transport is not None and snapshot_transport.requires_headers else None
             )
             if snapshot_transport is not None and snapshot_transport.requires_headers and header is None:
+                if stats.roi is not None:
+                    stats.roi.process(None, buffer)
                 if gpu_osd_enabled:
                     _decorate_osd_metadata(pyds, batch_meta, frame_meta, object_metas, class_labels=class_labels, pipeline_fps=stats.current_pipeline_fps(), accepted_tracks=())
                 continue
@@ -712,14 +720,16 @@ def _metadata_probe(
                     src_ts_ns=(header.source_time_ns if header is not None else None),
                     source_identity_verified=(header.source_identity_verified if header is not None else None),
                 )
+            roi_skipped = stats.roi is not None and stats.roi.yolo_skipped
             shadow = [
                 o for o in (_shadow_observations(pyds, batch_meta, frame_meta, stats.shadow_policy)
-                            if stats.shadow_policy is not None else [])
+                            if stats.shadow_policy is not None and not roi_skipped else [])
                 if stats.missed_frames.missed(o.track_id) < stats.shadow_policy.max_age_frames
             ]
             stats.shadow_tracks_published += len(shadow)
             snapshot = perception_snapshot_from_metadata(
-                timing, object_metas, stats.missed_frames,
+                timing, [] if roi_skipped else object_metas,
+                MissedFrameCounter() if roi_skipped else stats.missed_frames,
                 raw_detections=stats.raw_detections.pop(int(frame_meta.frame_num), None),
                 shadow_tracks=shadow,
                 # The same gate for NvDCF's own tracker-only objects.
@@ -727,12 +737,22 @@ def _metadata_probe(
                                       if stats.shadow_policy is not None else 0.0),
                 coast_max_frames=(stats.shadow_policy.max_age_frames
                                   if stats.shadow_policy is not None else None),
-                stitcher=stats.stitcher,
+                stitcher=None if roi_skipped else stats.stitcher,
             )
             snapshot = snapshot.model_copy(update={"frame": snapshot.frame.model_copy(
                 update={"tracker_session": stats.tracker_session})})
-            if target_selector is not None:
+            roi_result = None
+            if stats.roi is not None:
+                stats.roi_pipeline.record_frame(frame_meta, snapshot.frame)
+                roi_result = stats.roi.process(snapshot.frame, buffer, decoded_pts_ns=pts_ns)
+                if roi_skipped:
+                    snapshot = stats.roi.snapshot(snapshot.frame, roi_result)
+            if target_selector is not None and not roi_skipped:
                 snapshot = target_selector.submit_and_apply_snapshot(snapshot)
+            if stats.roi is not None:
+                snapshot = snapshot.model_copy(update={"roi_state": RoiStateV2(
+                    capable=stats.roi.capable, owns_selection=roi_skipped,
+                    request_id=None if stats.roi.active is None else stats.roi.active.request_id)})
             target_track_id = (
                 snapshot.selection.track_id if snapshot.selection is not None else None
             )
@@ -744,7 +764,12 @@ def _metadata_probe(
                 ),
                 None,
             )
-            if gpu_osd_enabled:
+            if gpu_osd_enabled and roi_skipped:
+                from jetson.visual_lock.live_trial import decorate
+                decorate(pyds, batch_meta, frame_meta, roi_result, snapshot.frame.frame_id,
+                         stats.current_pipeline_fps(), source=stats.roi.source,
+                         managed_mode=stats.roi.source + "_visual_lock")
+            elif gpu_osd_enabled:
                 _decorate_osd_metadata(
                     pyds,
                     batch_meta,
@@ -1134,6 +1159,11 @@ def run(argv: Sequence[str] | None = None, *, initial_bundle=None) -> int:
     parser.add_argument("--report", type=Path, help="write JSON report")
     parser.add_argument("--ready-file", type=Path, help="create after the first DeepStream metadata frame")
     parser.add_argument("--health-file", type=Path, help="refresh at most once per second while frames arrive")
+    parser.add_argument("--seamless-roi", action="store_true")
+    parser.add_argument("--roi-build", type=Path, default=REPO_ROOT / "build/visual-lock")
+    parser.add_argument("--roi-evidence-root", type=Path, default=Path("/var/lib/idcs/visual-lock/seamless"))
+    parser.add_argument("--roi-bind", default="tcp://0.0.0.0:5596")
+    parser.add_argument("--return-identity-bind", default="tcp://0.0.0.0:5595")
     parser.add_argument("--header-bind", help="optional ZMQ PULL bind endpoint for PC headers")
     parser.add_argument(
         "--verified-rtp-headers", action="store_true",
@@ -1215,6 +1245,9 @@ def run(argv: Sequence[str] | None = None, *, initial_bundle=None) -> int:
             parser.error(f"IDCS config does not exist: {config_path}")
     if not args.nvinfer_config.is_file():
         parser.error(f"nvinfer config does not exist: {args.nvinfer_config}")
+    if args.seamless_roi and (not args.return_udp_host or not has_metadata_output
+                             or (not args.live_argus and not args.verified_rtp_headers)):
+        parser.error("--seamless-roi requires live exact identity, snapshot and RTP return output")
 
     if args.gpu_osd:
         from common.ui_fonts import configure_fonts
@@ -1272,6 +1305,7 @@ def run(argv: Sequence[str] | None = None, *, initial_bundle=None) -> int:
                 return_bitrate_kbps=args.return_bitrate_kbps,
                 return_feedback_port=args.return_feedback_port,
                 return_sender_report_port=args.return_sender_report_port,
+                seamless_roi=args.seamless_roi,
             )
         )
     except Exception as exc:
@@ -1302,7 +1336,8 @@ def run(argv: Sequence[str] | None = None, *, initial_bundle=None) -> int:
         )
     if args.target_selection:
         target_selector = AsyncDeepStreamTargetSelector(args.idcs_config,
-            operator_endpoint=args.operator_selection, initial_bundle=initial_bundle)
+            operator_endpoint=args.operator_selection, initial_bundle=initial_bundle,
+            enable_roi_pause=args.seamless_roi)
         print("[deepstream.verify] latest-only target selection service enabled; control remains disabled", flush=True)
     if args.idcs_config:
         from common.live_config import LiveSettings, service_unit, digest
@@ -1330,9 +1365,24 @@ def run(argv: Sequence[str] | None = None, *, initial_bundle=None) -> int:
         if primary_element is None or primary_element.get_static_pad("src") is None:
             raise RuntimeError("detector output pad is unavailable")
         primary_element.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, _detector_probe, (Gst, stats))
+    if args.seamless_roi:
+        from jetson.deepstream.roi_runtime import RoiRuntime
+        from jetson.deepstream.roi_pipeline import RoiPipeline
+        source = "camera" if args.live_argus else "sim"
+        stats.roi = RoiRuntime(source, stats.tracker_session, build=args.roi_build,
+                               evidence_root=args.roi_evidence_root / source)
+        if not stats.roi.capable:
+            print(f"[deepstream.runtime] {stats.roi.error}; YOLO remains available", flush=True)
+        def roi_fail(reason):
+            outcome["error"] = reason
+            GLib.idle_add(loop.quit)
+        stats.roi_pipeline = RoiPipeline(stats.roi, pipeline, Gst, GLib, pyds,
+            identity_bind=args.return_identity_bind, seed_bind=args.roi_bind, fail=roi_fail,
+            stage_clock=stage_clock, selector=target_selector)
+        src_pad = pipeline.get_by_name("osd").get_static_pad("sink")
     src_pad.add_probe(
         Gst.PadProbeType.BUFFER,
-        _metadata_probe,
+        _metadata_probe if stats.roi_pipeline is None else stats.roi_pipeline.metadata_probe,
         (Gst, stats, stage_clock, snapshot_transport, args.gpu_osd, target_selector, class_labels),
     )
     if args.return_h264:
@@ -1379,7 +1429,8 @@ def run(argv: Sequence[str] | None = None, *, initial_bundle=None) -> int:
         stats.sensor_frames = SensorFrameIndex()
         source_src_pad.add_probe(Gst.PadProbeType.BUFFER, _argus_sensor_probe,
                                  (Gst, ArgusSensorMetaReader(), stats.sensor_frames))
-    primary_sink_pad.add_probe(Gst.PadProbeType.BUFFER, _stage_probe, (Gst, stage_clock, "infer_input"))
+    if not args.seamless_roi:
+        primary_sink_pad.add_probe(Gst.PadProbeType.BUFFER, _stage_probe, (Gst, stage_clock, "infer_input"))
 
     loop = GLib.MainLoop()
     outcome = {"error": None}
@@ -1406,7 +1457,13 @@ def run(argv: Sequence[str] | None = None, *, initial_bundle=None) -> int:
     try:
         loop.run()
     finally:
-        pipeline.set_state(Gst.State.NULL)
+        try:
+            if stats.roi_pipeline is not None:
+                stats.roi_pipeline.close()
+        except Exception as exc:
+            outcome["error"] = f"ROI teardown fault: {exc}"
+        finally:
+            pipeline.set_state(Gst.State.NULL)
         bus.remove_signal_watch()
         if snapshot_transport is not None:
             snapshot_transport.close()
@@ -1424,11 +1481,10 @@ def run(argv: Sequence[str] | None = None, *, initial_bundle=None) -> int:
                 args.health_file.unlink(missing_ok=True)
             except OSError:
                 pass
-        # Keep the GStreamer/pyds objects referenced past this frame: freeing
-        # them as run() returns blocked in native teardown (the service was
-        # SIGKILLed on every stop). The service entry point leaves with
-        # os._exit once run() returns, so they are never freed.
-        _RETAINED.append(dict(locals()))
+        # Legacy verification callers retain their historical objects. The ROI
+        # runtime always releases its resources and undergoes normal teardown.
+        if not args.seamless_roi:
+            _RETAINED.append(dict(locals()))
 
     if outcome["error"]:
         raise RuntimeError(f"DeepStream pipeline failed: {outcome['error']}")
@@ -1461,6 +1517,12 @@ def run(argv: Sequence[str] | None = None, *, initial_bundle=None) -> int:
     report["snapshot_transport"] = None if snapshot_transport is None else snapshot_transport.report()
     report['return_recovery'] = None if return_recovery is None else return_recovery.stats()
     report["target_selection"] = None if target_selector is None else target_selector.report()
+    if stats.roi is not None:
+        report["roi"] = dict(stats.roi.status(), roi_timing_samples=list(stats.roi.timings),
+            timing_samples=list(stats.roi.pipeline_timings),
+            return_identity=dict(mapped=stats.roi_pipeline.mapper.mapped,
+                                 withheld=stats.roi_pipeline.mapper.withheld,
+                                 ambiguous=stats.roi_pipeline.mapper.ambiguous))
     print(json.dumps(report, indent=2, sort_keys=True))
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)

@@ -4,6 +4,177 @@ Implemented 2026-10-07: NVIDIA **VPI CUDA DCF + Harris + forward/backward PyrLK*
 not DeepStream NvDCF and not OpenCV tracking. No YOLO output is an input.
 OpenCV in the verifier only decodes, renders and annotates pixels.
 
+## Resident ROI in Camera / Simulator (2026-10-20 review candidate)
+
+Normal `jetson.deepstream.runtime` now enables `deepstream.seamless_roi` by
+default. Targets -> Select box / Release / Box size works in Camera and both
+Simulator scenes when fresh runtime V2 reports `roi_state.capable`. Selecting
+a box changes selection ownership inside the current process; it does not
+change mode, source, encoder, RTP session or service. The two managed VPI-only
+modes below remain available as fallback. This candidate has **software-only
+verification**, not Jetson/Pi acceptance or a deployment receipt.
+
+The mux routing probe admits one buffer at a time through a completion barrier.
+Ordinary buffers traverse the original nvinfer -> nvtracker path unchanged.
+While a seed is pending, acquiring or tracking, the probe chains the original
+NV12 buffer directly to the common `roi_owner` queue and drops its normal
+route, bypassing **both** GPU elements. This is not an nvinfer interval change:
+neither element receives those buffers. Probes count actual
+`primary_input_buffers` and `tracker_input_buffers`; a skipped buffer reaching
+either is a fatal, visible bypass-contract fault. One outstanding buffer also
+prevents a previous asynchronous NvDCF job overlapping acquisition. On release
+the next admitted frame traverses YOLO; on loss the following frame does.
+No automatic reseed, hidden tracker continuation or VPI-to-NvDCF handoff occurs.
+
+The existing pre-OSD RGBA NVMM surface supplies a bounded exact cache (16
+frames / 400 ms). The normal encoder-input and final return-wire probes use
+`ReturnRtpMapper`, not FIFO or timestamp estimates, to publish displayed-frame
+identities on 5595. Seeds/releases still use 5596; selected/empty V2 still uses
+5564. Cached acquisition preserves the exact seed and current endpoint with
+the existing bounded catch-up and unchanged gates. All clones, registered CUDA
+borrows, VPI session calls and native destruction run on the queue's RGBA
+streaming owner. The serialized close event acknowledges teardown before the
+pipeline releases EGL; there is no extra `StandaloneEGL` owner or `_Exit` path.
+CUDA input, DCF hold **12,30**, overlay queue and trial defaults are unchanged.
+
+Native payload creation is lazy until the first confirmed box. Release/loss
+closes that payload; a new explicit box creates another. Libraries are loaded
+from the release's `build/visual-lock`; missing files, dependencies, clone ABI
+or ABI4 withdraw capability with a clear `roi_error`, while YOLO/video keep
+working. Evidence failures also withdraw ROI rather than restart video. Native
+teardown faults fail visibly. Normal software units create their evidence roots
+with `StateDirectory`; no physical/HIL unit changed.
+
+`roi_state` is an optional strict V2 extension naming capability, ownership and
+request; the frame supplies source/session identity. The agent suppresses
+detector commands, lock expiry and score jobs while ROI owns selection. The
+5595 status can latch ownership during cold acquisition, before its first V2
+output; an older detector frame cannot clear it. Only a later detector frame
+returns authority. The selector receives no ROI frames. A shared pause/work
+barrier waits at most 500 ms for an in-flight learned selection job before VPI
+starts; queued jobs and results from before the pause have an obsolete epoch
+and are discarded. The selector process remains alive with no policy/GPU work
+while paused. Single SIM retains its
+ordinary synthetic input until ROI owns selection, then relays the Jetson V2
+selection on its existing loopback input. Stale ROI withholds selection until
+a fresh detector frame returns authority; simulator truth never enters VPI.
+Swarm and camera shadow already consume normal Jetson V2 directly. Update PC,
+Pi and Jetson consumers together: older strict V2 readers reject `roi_state`.
+
+Per-lock evidence is under
+`/var/lib/idcs/visual-lock/seamless/{camera,sim}/session-<hex>`: bounded 32 MB
+frame JSONL, 8 MB acquisition JSONL, at most 64 seed diagnostics and a final
+summary. Existing managed rotation keeps the source root within 4 GB with a
+512 MB reserve and requires 5 GB disk free. Logs filling does not stop tracking.
+These separate roots preserve the fallback receiver's evidence. No new raw
+camera or duplicate return recorder is introduced; retain the Pi video recording
+for pixel review. Historical trials/recordings/rollback sources are untouched.
+
+### Cost and remaining performance gate
+
+These are estimates from the existing journal measurements, **not new Jetson
+measurements**. Windows tests prove routing and zero idle VPI calls, not GPU
+timing. Detector configuration and input pixels remain unchanged on YOLO frames.
+
+| State | Work / expected cost |
+|---|---|
+| No lock | Existing YOLO (~11 ms) and NvDCF, plus one GPU RGBA cache clone and queue/barrier overhead; no VPI payload or processing. At 60 Hz copies move ~442 MB/s (read + write). A 25 GB/s effective copy rate alone implies ~0.30 ms/frame; allocation/EGL costs and lost pipeline overlap are additional and unmeasured. |
+| Locked | No nvinfer/NvDCF inputs; existing VPI path ~11-13 ms/frame plus routing, metadata, conversion and return work. Idle cache cloning stops. |
+| Seed switch | Exact bounded catch-up: normally <=5 images at 60 Hz or <=7 at 30 Hz within this cache; roughly 55-91 ms at the above per-image rate, plus seed diagnostics and cold native allocation (trial measured ~160 ms). First-use kernel cost is unmeasured here. |
+| Release / loss | Owner-thread native destruction is unmeasured; release frame adds that cleanup to normal detector work, loss frame cleans up after VPI and the next frame runs YOLO. No service/source/encoder restart. |
+
+Cache payload: `16 * 1280 * 720 * 4 = 58,982,400` bytes (56.25 MiB), plus
+pitch/driver overhead. Clone-before-eviction temporarily reaches 17 surfaces
+(59.77 MiB payload); decoder/converter pools and VPI payloads are additional.
+The added cache and serialization mean **idle cost equality is not established**.
+Unchanged frame rate/output and the 16.7 ms budget remain reviewer gates. In
+particular, cold allocation/catch-up can exceed the existing 150 ms source-gap
+or 250 ms freshness budget and visibly lose/refuse the first lock; do not relax
+those guards or call that seamless performance acceptance.
+
+Cached images use the existing EGL wrapper path; their catch-up cost can exceed
+the registered live CUDA-input timing above. Measure it separately.
+
+Health and 5595 status expose `frame_work_ms` (last completed mux-admission to
+metadata/ROI/OSD attachment, excluding encoder/transit), `roi_frame_work_ms`,
+`vpi_ms`, `selector_pause_ms`, `yolo_skipped`, capability/error and cumulative routing/actual GPU-input
+counters. Final `roi.timing_samples` retains the last 600
+`[frame_work_ms, vpi_ms, yolo_skipped]` triples; `roi.roi_timing_samples` measures
+only the RGBA ROI callback. Per-lock JSONL retains VPI/ROI callback timing.
+Compare identical deterministic inputs with `deepstream.seamless_roi: false`
+as baseline; do not infer GPU kernel time solely from wall-clock probes.
+
+### Exact reviewer checklist for this candidate (no motors)
+
+None of these host operations were executed by the delegated agent. Preserve
+manifests, unit fragments/overrides and prior evidence. Use the reviewed release
+and coordinated software validation/activation procedure separately.
+
+1. **Ownership/hardware hold:** record manifests, source processes and
+   `systemctl is-active idcs-controller idcs-bridge idcs-serial idcs-hil.target`.
+   All four must be inactive. Inspect the active software owner before each GPU
+   test. Never stack the normal runtime and a fallback visual-lock receiver.
+2. **Jetson build:** in the candidate release with `$RELEASE`, `$MODELS`, `$PY`
+   and a new outside-repository `$ART` directory set by the reviewer, run
+   `bash scripts/prepare_jetson_runtime.sh "$RELEASE" "$MODELS"`, then
+   `ldd "$RELEASE/build/visual-lock/libidcs_visual_lock.so"` and
+   `ldd "$RELEASE/build/visual-lock/libidcs_visual_lock_live_surface.so"`.
+   Both must exist with no missing dependencies. Run the existing guarded ABI4
+   native/lifetime tests below exclusively. Run
+   `"$PY" -m pytest -q tests/test_seamless_roi.py tests/test_managed_visual_lock.py tests/test_operator_agent.py tests/test_deepstream_runtime.py tests/test_return_frame_identity.py`.
+   Validate `jetson.deepstream.runtime --check` with normal and local-camera
+   config stacks and review the two added `StateDirectory` lines. A check-only
+   invocation deliberately does not initialize GPU/native payloads.
+3. **Normal SIM, without panel:** select normal Simulator (Single or Swarm)
+   through the reviewed software workflow; record PID, active units, tracker
+   session and return RTP SSRC. On Jetson, run the bounded programmatic check:
+
+   ```sh
+   "$PY" -m tools.check_seamless_roi --box "$X" "$Y" "$W" "$H" \
+     --duration-s 5 --output "$ART/sim-seamless.json"
+   ```
+
+   Choose X/Y/W/H over texture in the displayed SIM target; the helper uses
+   fresh 5595 exact identity and sends only seed/release on loopback 5596. It
+   checks accepted acquisition, selected V2 and detector ownership returning on
+   5564. It starts no service, panel, bridge or controller. Repeat with a new
+   report path after release, with a textureless seed (expect explicit refusal)
+   and after deliberate visual disappearance (expect terminal loss/new box).
+   PID/source/session/SSRC must stay unchanged; return frame IDs must progress
+   across every transition. A no-panel check proves selection/transport, not
+   applied SIM follow. Verify Single's loopback relay and Swarm's direct input
+   separately using deterministic V2/controller diagnostics without truth-fed
+   tracking. Record cold and subsequent seed times and any freshness/gap loss.
+4. **Prove GPU-off and cost:** capture health before/during/after a >=10 s lock;
+   route skipped count must rise while actual primary/tracker input counts stay
+   flat, `unexpected_gpu_input` must remain zero, and both input counts must
+   rise on release/loss. Profile nvinfer/NvDCF kernels on Jetson if counters
+   and GPU utilization disagree. Compare idle/locked/switch p50/p95/max, source
+   and return cadence, memory, dropped frames and detector output against the
+   same bounded input with seamless ROI disabled. Refuse acceptance on idle
+   regression, over-budget steady work, stale first lock or a black return.
+5. **Pi workflow:** in normal Camera and normal Simulator, verify Select box /
+   Release / all four presets, persistence, exact identity, readable Manual /
+   GPIO12 OFF -> ON, E-stop, stale source/video/panel/session and refusal text.
+   Release/loss must return a box, require readable OFF, and resume YOLO with no
+   source transaction. Detector/score actions must be blocked while acquiring
+   or tracking. With the existing fresh accepted SIM lease, verify only the
+   software mount follows. Physical Pi ROI auto-block remains intact.
+6. **Camera:** select normal Camera; verify only `idcs-deepstream-camera` owns
+   Argus, with the existing shadow controller and viewer. In a bounded 60 s
+   textured-box run, verify sensor/SOF/return joins, acquire/release/loss/new
+   explicit selection, upright OSD, uninterrupted encoded return and shadow
+   geometry. Nothing may emit physical intents. Exercise missing-native and
+   evidence-write failures in an isolated candidate copy, preserving actual
+   release assets: YOLO/video must remain healthy and ROI must show unavailable.
+7. **Exit and fallback:** stop through the normal software workflow with an
+   active box and without one. Require owner-thread close acknowledgement and
+   normal native process exit (no abort, hang, `_Exit`, stale selection or leaked
+   source). Then separately verify both existing managed VPI-only modes still
+   acquire/release/loss and switch back through their ordinary transactions.
+   No physical panel, camera quality, sustained 60 Hz, cold native lifetime or
+   GPU timing is qualified by the Windows contract results.
+
 ## Managed console candidate (2026-10-20)
 
 The source modes `camera_visual_lock` (Camera / Visual lock) and

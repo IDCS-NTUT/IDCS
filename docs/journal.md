@@ -397,3 +397,78 @@ State at the hand-over (2026-10-20):
   before the old one's EOS. Pi test: 5 s file and 10.0/10.1/5.0 s segments, all
   start 0.000, 752 frames for 750 expected (no gap, ~2 frames overlap).
 - Clock note: Jetson wall clock +2.2 s vs PC/Pi (not NTP-synced since 13 Oct).
+
+## 2026-10-20 - resident Camera/SIM ROI, delegated review candidate
+
+- Branch `codex/seamless-roi`, base `285f962` (deploy-105 source). Local Windows
+  work only: no lab host, GPU/camera, serial, bridge, HIL or motor contact;
+  no deployment/activation, push, tag or PR. Existing managed visual-lock modes
+  and their defaults remain as fallback.
+- DeepStream gains a mux routing barrier and one common RGBA frame owner.
+  Pending/acquiring/tracking ROI buffers bypass both nvinfer and nvtracker;
+  release uses YOLO on the next admitted frame, loss on the following one.
+  Actual primary/tracker input counters and a bypass-violation guard distinguish
+  real GPU bypass from merely hiding detector selection. Original detector
+  configuration/input pixels remain unchanged while YOLO runs.
+- Reuses exact 16-frame/400 ms GPU cache, bounded catch-up, VPI session/CUDA
+  borrowing, unchanged gates/DCF hold12,30 and visual OSD. Exact return identity
+  5595, seed/release5596 and normal V2 on5564 remain the existing ports. Optional
+  strict `roi_state` carries capability/ownership; agent commands, lock expiry
+  and score actions cannot override it. Acquisition status latches authority
+  before a cold VPI output. Pi exposes the existing box workflow directly in
+  normal Camera and Simulator. Single's existing loopback publisher relays ROI
+  selection while owned; stale ROI withholds selection, never truth-falls-back.
+- The learned selector also has a shared pause/work barrier: acquisition waits
+  for its current job (500 ms timeout), then no queued policy work runs while
+  locked. Epochs discard pending pre-ROI jobs/results on resume. Added threaded
+  fake-worker tests prove pause ordering and stale-job rejection; process/service
+  ownership does not change.
+- Release/loss requires an explicit new box. Missing files/dependencies/ABI
+  withdraw ROI capability visibly while YOLO/video continue. Evidence is per
+  lock under separate `/var/lib/idcs/visual-lock/seamless/{camera,sim}` roots,
+  using existing rotation/BoundedLog limits. Only the two passive software
+  units gain StateDirectory; no physical/HIL fragment changed. A serialized
+  frame-owner close replaces the ROI runtime's forced interpreter exit; native
+  teardown faults remain visible and require Jetson lifetime qualification.
+- Tests: pure seamless contracts exercise real session/fusion with fake native
+  pixels, routing and socket dispatch, release/loss/arbitration, agent acquisition
+  races, Camera/SIM menus, SIM lease/relay, evidence bounds and missing native
+  files/dependencies/ABI. Both RTP and local-camera runtime `--check`, compileall
+  and reviewer CLI `--help` run without opening video/control sockets.
+- Baseline proof: an untouched `git archive HEAD` snapshot outside the worktree
+  ran `python -m pytest -q --continue-on-collection-errors --tb=short`: **1382
+  passed, 58 skipped, 9 failed, 8 collection errors**, 20 subtests. Failures:
+  two Windows temporary-path casing assertions; five missing-Pillow tests; one
+  missing trimesh test; one absent untracked gimbal fit report. Collection:
+  four missing gi and four missing Pillow imports. The first candidate full
+  run reproduced those exact failure names. Final results are recorded below.
+- Cost is not hardware-qualified: no idle VPI calls/payloads in fake-native
+  tests, but continuous exact-frame caching and serialization add overhead.
+  Payload is 56.25 MiB (59.77 MiB transient clone-before-eviction), plus driver
+  overhead. At60Hz, cache read+write traffic is ~442 MB/s; an assumed25 GB/s copy
+  rate alone implies ~0.30 ms/frame. Existing live VPI was ~11-13 ms vs YOLO
+  ~11 ms; locked frames bypass YOLO/NvDCF. Cold allocation (~160 ms in prior
+  trial) plus bounded catch-up and destruction remain switch-frame risks.
+  Idle-cost equality/unchanged cadence, 16.7 ms steady budget, cold freshness,
+  GPU bypass, return continuity and native normal exit remain explicit reviewer
+  gates. Do not relax source-gap/freshness guards to pass them.
+- `docs/visual_lock.md` holds design, cost assumptions and the exact Jetson
+  build, panel-less SIM programmatic5596 check (`tools.check_seamless_roi`), Pi,
+  camera, missing-native and fallback/lifetime checklist. Hardware/panel
+  acceptance and actual SIM/shadow follow were not exercised here.
+- Final candidate verification:
+  `python -m pytest -q --continue-on-collection-errors --tb=short` -> **1407
+  passed, 57 skipped, the same 9 failed and 8 collection errors**, 20 subtests,
+  175.96 s. No new failure names versus the untouched baseline. The additional
+  baseline skip is the historical Git comparison, available in the real checkout
+  and unavailable in the archive snapshot.
+  `python -m pytest -q tests/test_seamless_roi.py tests/test_deepstream_target_selection.py tests/test_deepstream_runtime.py --tb=short`
+  -> **45 passed**, including all **24 new seamless contracts**.
+  `python -m pytest -q tests/test_seamless_roi.py tests/test_managed_visual_lock.py tests/test_operator_agent.py tests/test_deepstream_runtime.py tests/test_live_config.py::test_all_21_systemd_stacks_validate_and_keep_base_effective_values --tb=short`
+  -> **121 passed** before the two final selector-barrier tests were added;
+  the complete suite includes those additions. Both normal/local-camera
+  `python -m jetson.deepstream.runtime --check` invocations, changed-module
+  compileall, `python -m tools.check_seamless_roi --help` and `git diff --check`
+  passed. Local baseline/candidate reports are preserved outside the repository
+  in the Windows temporary `idcs-seamless-roi-base-9a72ef15f11345739f04f1bfc68b3ead`
+  directory; no recordings or rollback sources were removed.

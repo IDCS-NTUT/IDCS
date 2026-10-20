@@ -48,3 +48,6 @@ deepstream:
   # runs with --verified-rtp-headers), so a controller consuming these
   # snapshots gets verified frame identity instead of order-based matching.
   verified_rtp_headers: true
+  # Resident ROI stage; native payloads are created only after an explicit box.
+  # Missing release libraries withdraw ROI capability while YOLO keeps running.
+  seamless_roi: true

@@ -163,6 +163,7 @@
   "deepstream.tracker": {"enum": ["nvsort", "nvdcf", "none"], "tier": "restart", "types": ["str"]},
   "deepstream.tracker_config": {"tier": "restart", "types": ["str", "null"]},
   "deepstream.verified_rtp_headers": {"tier": "restart", "types": ["bool"]},
+  "deepstream.seamless_roi": {"tier": "restart", "types": ["bool"]},
   "episodes": {"tier": "restart", "types": ["map"]},
   "episodes.max_targets": {"integer": true, "tier": "restart", "types": ["number"]},
   "episodes.max_targets_tensor": {"integer": true, "tier": "restart", "types": ["number"]},

@@ -127,6 +127,13 @@ class TargetSelectionV2(_PerceptionModel):
     policy: str = Field(min_length=1, max_length=80)
 
 
+class RoiStateV2(_PerceptionModel):
+    """Runtime capability and selection ownership, scoped by the enclosing frame."""
+    capable: bool
+    owns_selection: bool
+    request_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
 class PerceptionSnapshotV2(_PerceptionModel):
     """Atomic boundary between perception, selection, and fixed-rate control."""
 
@@ -140,6 +147,7 @@ class PerceptionSnapshotV2(_PerceptionModel):
     tracks: tuple[PerceptionTrackV2, ...] = ()
     assessments: tuple[TrackAssessmentV2, ...] = ()
     selection: TargetSelectionV2 | None = None
+    roi_state: RoiStateV2 | None = None
 
     @model_validator(mode="after")
     def _consistent_identity(self):

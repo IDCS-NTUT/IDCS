@@ -85,6 +85,7 @@ class AgentConfig:
     readiness_timeout_s: float = 30.0
     health_file: Path = Path("/run/idcs/deepstream-video-health.json")
     activity_bind: str = "tcp://*:5593"
+    roi_status: str = ""
 
     @classmethod
     def from_config(cls, cfg: Mapping[str, Any]) -> "AgentConfig":
@@ -166,6 +167,7 @@ class AgentConfig:
             pc_bind=_bind_address(pc_endpoint), readiness_timeout_s=timeout,
             health_file=Path(str(op.get("health_file") or "/run/idcs/deepstream-video-health.json")),
             activity_bind=_bind_address(str(net.get("zmq_sim_activity") or "tcp://192.168.0.5:5593")),
+            roi_status=str(net.get("zmq_return_frame_identity") or ""),
         )
 
     def mode(self, name: str) -> Mode | None:
@@ -226,6 +228,11 @@ class OperatorAgent:
     _transition_s: float = 0.0
     _lock_seen_s: float | None = None
     _job: threading.Thread | None = field(default=None, repr=False)
+    _roi_capable: bool = False
+    _roi_owns_selection: bool = False
+    _roi_status_frame: int | None = None
+    _roi_status_session: str | None = None
+    _roi_status_sequence: int = -1
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def __post_init__(self) -> None:
@@ -293,7 +300,7 @@ class OperatorAgent:
     def visual_lock_active(self) -> bool:
         # Selection authority belongs to the running source even if PC goes
         # offline and current_mode consequently reports mixed.
-        return bool(self.active_units & {"idcs-visual-lock-camera.service", "idcs-visual-lock-sim.service"})
+        return self._roi_owns_selection or bool(self.active_units & {"idcs-visual-lock-camera.service", "idcs-visual-lock-sim.service"})
 
     def motors_live(self) -> bool:
         return any(u in self.active_units for u in self.config.motor_units)
@@ -308,6 +315,7 @@ class OperatorAgent:
             "mode": "sim" if mode == "sim_swarm" else mode,
             "sim_scene": "swarm" if mode == "sim_swarm" else "single" if mode == "sim" else None,
             "visual_lock": self.visual_lock_active(),
+            "roi_capable": self._roi_capable and self._perception_live(),
             "sim_visual_lock": self.config.mode("sim_visual_lock") is not None,
             "sim_hud_session": None if sim_catalog is None else sim_catalog.catalog.session,
             "sim_scenes": ([{"name": "single", "label": "Single"},
@@ -349,12 +357,57 @@ class OperatorAgent:
 
     # --- perception (lock lifetime) -------------------------------------------
 
+    def on_roi_status(self, status: Mapping[str, Any]) -> None:
+        # Acquisition may spend a cold native allocation before its first V2
+        # output. The sideband can latch authority early; only a subsequent
+        # detector frame gives it back. Old in-flight frames cannot clear it.
+        frame_id = status.get("roi_frame_id")
+        sequence = status.get("sequence")
+        if (status.get("type") == "visual_roi_status_v1"
+                and status.get("roi_capable") is True
+                and status.get("selection_owner") == "visual_lock"
+                and status.get("tracker_session") == self._camera_session
+                and status.get("managed_mode") in ("camera", "sim")
+                and status.get("source_ready") is True
+                and type(sequence) is int and sequence > self._roi_status_sequence
+                and type(frame_id) is int and frame_id >= 0
+                and (self._source_frame is None or type(self._source_frame[1]) is not int
+                     or frame_id >= self._source_frame[1])):
+            self._roi_status_frame = max(frame_id, self._roi_status_frame or 0)
+            self._roi_status_session = self._camera_session
+            self._roi_status_sequence = sequence
+            if not self._roi_owns_selection:
+                self.lock_track_id = None
+                self._lock_seen_s = None
+                self.sequence += 1
+            self._roi_owns_selection = True
+
     def on_snapshot(self, snapshot: Mapping[str, Any]) -> None:
         now = self.clock()
         self._perception_s = now
         frame = snapshot.get("frame") or {}
+        roi = snapshot.get("roi_state") or {}
+        if not isinstance(roi, Mapping):
+            roi = {}
+        self._roi_capable = (roi.get("capable") is True and frame.get("source_identity_verified") is True
+                             and frame.get("source_clock_domain") in ("pc_monotonic", "jetson_monotonic"))
+        owns = roi.get("owns_selection") is True
+        if self._roi_status_frame is not None:
+            if (frame.get("tracker_session") != self._roi_status_session
+                    or type(frame.get("frame_id")) is int
+                    and frame["frame_id"] > self._roi_status_frame):
+                self._roi_status_frame = self._roi_status_session = None
+            else:
+                owns = True
+        if owns and not self._roi_owns_selection:
+            self.lock_track_id = None
+            self._lock_seen_s = None
+            self.sequence += 1
+        self._roi_owns_selection = owns
         session = frame.get("tracker_session")
         if session:
+            if self._camera_session != str(session):
+                self._roi_status_sequence = -1
             self._camera_session = str(session)
         elif self._source_frame is not None and frame.get("frame_id", 0) < (self._source_frame[1] or 0):
             self._camera_session = uuid.uuid4().hex
@@ -706,7 +759,7 @@ def reply(agent: OperatorAgent, raw: bytes) -> str:
 
 
 def serve_loop(agent, config_channel, settings, poller, rep, pc_rep, pub, activity_pub,
-               perception, stop):
+               perception, stop, roi_status=None):
     """Run the owning loop; configuration work stays on its worker."""
     next_units = time.monotonic() + UNIT_POLL_S
     next_selection = 0.0
@@ -715,6 +768,16 @@ def serve_loop(agent, config_channel, settings, poller, rep, pc_rep, pub, activi
         config_channel.poll()
         settings.tick(engaged=False)
         events = dict(poller.poll(50))
+        if roi_status is not None and roi_status in events:
+            for _ in range(64):
+                try:
+                    status = json.loads(roi_status.recv(zmq.NOBLOCK))
+                except zmq.Again:
+                    break
+                except ValueError:
+                    continue
+                if isinstance(status, dict):
+                    agent.on_roi_status(status)
         if perception is not None and perception in events:
             try:
                 snapshot = json.loads(perception.recv(zmq.NOBLOCK))
@@ -822,6 +885,14 @@ def main() -> int:
     poller.register(pc_rep, zmq.POLLIN)
     if perception is not None:
         poller.register(perception, zmq.POLLIN)
+    roi_status = None
+    if config.roi_status:
+        roi_status = ctx.socket(zmq.SUB)
+        roi_status.setsockopt(zmq.RCVHWM, 128)
+        roi_status.setsockopt(zmq.LINGER, 0)
+        roi_status.setsockopt_string(zmq.SUBSCRIBE, "")
+        roi_status.connect(config.roi_status)
+        poller.register(roi_status, zmq.POLLIN)
 
     stop = threading.Event()
     import signal
@@ -833,7 +904,7 @@ def main() -> int:
              config.command_bind, config.selection_bind, list(agent.target_classes), agent.current_mode())
     try:
         serve_loop(agent, config_channel, settings, poller, rep, pc_rep, pub, activity_pub,
-                   perception, stop)
+                   perception, stop, roi_status)
     finally:
         config_link.close()
         config_channel.close()

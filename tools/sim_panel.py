@@ -100,7 +100,8 @@ class RoiSimAuthority:
             return False
         if status:
             if value.get('type') != 'visual_roi_status_v1': return False
-            if not self.source.observe(value,now_s,managed_mode='sim_visual_lock'):
+            mode = value.get('managed_mode')
+            if mode not in ('sim','sim_visual_lock') or not self.source.observe(value,now_s,managed_mode=mode):
                 self.status = None
                 return False
             self.status, self.status_s = value, now_s
@@ -115,7 +116,8 @@ class RoiSimAuthority:
         fresh = (self.lease_s is not None and 0 <= now_s-self.lease_s <= .25
                  and self.status_s is not None and 0 <= now_s-self.status_s <= .25)
         accepted = (fresh and lease.get('enabled') is True
-            and lease.get('managed_mode') == status.get('managed_mode') == 'sim_visual_lock'
+            and lease.get('managed_mode') == status.get('managed_mode')
+            and status.get('managed_mode') in ('sim','sim_visual_lock')
             and status.get('source_mode') == 'sim' and status.get('source_ready') is True
             and status.get('control_disabled') is False
             and isinstance(lease.get('request_id'),str) and bool(lease['request_id'])

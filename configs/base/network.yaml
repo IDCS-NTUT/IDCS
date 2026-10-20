@@ -41,8 +41,8 @@ net:
   zmq_config_link: "tcp://192.168.0.5:5598"  # dedicated PC-initiated shared config link
   zmq_operator_pc: "tcp://192.168.0.5:5592"  # PC agent REQ → Jetson REP; no inbound PC control address
   zmq_sim_activity: "tcp://192.168.0.5:5593"  # read-only PC sink activity relay -> Pi; no motor commands
-  zmq_return_frame_identity: "tcp://192.168.0.5:5595"  # opt-in ROI trial: return RTP key -> exact source frame
-  zmq_visual_roi_seed: "tcp://192.168.0.5:5596"  # isolated software-SIM ROI trial only
+  zmq_return_frame_identity: "tcp://192.168.0.5:5595"  # return RTP key -> exact source frame and ROI capability
+  zmq_visual_roi_seed: "tcp://192.168.0.5:5596"  # exact-frame ROI seed/release (normal and fallback owners)
   zmq_visual_roi_perception: "tcp://192.168.0.5:5597"  # isolated visual lock; never ordinary motor-controller input
   pc_bind_ip: 192.168.0.1                  # optional local bind IP for PC RTP sockets
   zmq_source_clock_sync: "tcp://192.168.0.1:5575"  # PC monotonic-clock responder for Jetson frame-time mapping

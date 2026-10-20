@@ -98,3 +98,17 @@ State at the hand-over (2026-10-20):
 - Delegated to Codex: task `codex-bridge/tasks/visual-lock-console.md`, base
   `lab/visual-lock-console` (`3327594`). Review, builds and lab validation
   follow on return.
+
+## 2026-10-20 - queued: visual-lock reference refresh (after the console milestone)
+
+- Finding (code reading): the reference image and points are set once at
+  seed (`vl_process` seed path) and never refreshed. When rotation, lighting or
+  large scale change breaks the reference fit, frames are still accepted as
+  "position agrees; scale held", but `update_template` requires confident
+  geometry, so DCF learning and box size freeze while the reference disagrees.
+  A lasting appearance change can therefore end in "weak DCF response" loss.
+- Decision (project lead): try refreshing the reference (keyframing under
+  strict agreement: DCF, adjacent flow with small FB error, confident fit)
+  after the visual-lock console milestone is reviewed. Measure first on the
+  review clips and a SIM run with a rotating/changing target: duration of
+  untrusted reference, frozen learning before each loss.

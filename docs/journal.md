@@ -239,3 +239,33 @@ State at the hand-over (2026-10-20):
   queued reference-refresh work.
 - Not tested: SIM mount following (needs the Pi lease: Manual ON + GPIO12 ON
   at the panel) and the camera visual-lock mode.
+
+## 2026-10-20 - reference refresh measured and tried; not merged
+
+- Measurement (baseline review replays and the recorded fusion calls from
+  2026-10-19, replayed through an instrumented fusion copy): on real footage
+  the reference fit is trusted only in the first 1-8 frames; afterwards every
+  accepted frame is "position agrees; scale held" (41-254 frames), so DCF
+  learning freezes almost at once and PSR declines before each loss
+  (e.g. 25 -> 13). The failing condition is almost always an empty or
+  near-empty reference set: 296 untrusted frames had 0 of 0 reference tracks
+  (all failed LK status), others 1-3. Tracks decay over 10-35 frames
+  (e.g. 25 -> 16 -> 11 -> 2 -> 0). When trusted, the fit is near perfect
+  (residual and FB 0.00 px median).
+- Trial (branch `reference-refresh`, `IDCS-trials/reference-refresh-20261020`):
+  additive `vl_refresh_reference` (reference pyramid, points and box from the
+  just-committed frame), fusion `rebase_reference`, session policy refreshing
+  when valid reference tracks fall below 70% or every 30 accepted frames, on
+  trusted frames ("trusted") or also strong adjacent flow + PSR >= 2x min
+  ("confident"). Off reproduces the earlier review exactly.
+- Result: "trusted" never fired on real clips (trust ends before the 70%
+  point); "confident" changed little (seg1159 lost at frame 28 instead of 50,
+  seg2520 at 146 instead of 141, others unchanged). Fixtures unaffected.
+- Conclusion: every real-clip loss is adjacent-flow attrition ("insufficient
+  forward/backward features" / "inconsistent feature motion") with few new
+  corners on small targets; the empty reference is a symptom of the same
+  fragile points. Not merged. Next candidate: LK initial-flow prediction from
+  the DCF box motion (and/or more pyramid levels) for adjacent tracks.
+- SIM "insufficient feature spread" losses were mostly the test seed: a padded
+  truth box (~72x151) much taller than the drone's textured part (features
+  spanned 33 px vertically against a 30 px threshold).

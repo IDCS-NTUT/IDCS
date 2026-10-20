@@ -346,3 +346,25 @@ State at the hand-over (2026-10-20):
   Fix: PrivateTmp removed with the same comment, plus a test that no Argus
   unit sets PrivateTmp. Shipping as deploy-103 with a real Camera / Visual
   lock mode switch as part of verification.
+
+## 2026-10-20 - Pi return-video recording
+
+- Finding: nothing recorded video; the menu's Recording runs the Jetson flight
+  recorder (data only). The visual-lock session's `return.h264` evidence is
+  capped at ~20 MB, i.e. its first ~8 s, so the 15:15 camera lock (open hand,
+  X-large box, 11 s, 18 DCF-hold frames) has data and seed crops only
+  (`IDCS-build/visual-lock-camera-20261020-1515/`).
+- Project lead: record on the Pi (the PC is not always present).
+  `rpi/display/recording.py`: tee after h264parse, one leaky-queue -> h264parse
+  -> splitmuxsink(matroskamux) branch attached per recording, keyframe gate,
+  EOS on stop, files `<start>-<segment>-return.mkv`, prune oldest beyond the
+  budget. Config `rpi.operator_display.recording` {dir, segment_s 60,
+  max_total_gb 15} (Pi 36 GB free). Display follows the agent's `recording`
+  flag (last known value if the agent is briefly silent); report gains
+  `recording`.
+- Pi test with the real ReturnVideo on a spare port, fed RTP (pt 97) from the
+  PC: on 5 s / off 3 s / on 14 s / abrupt stop. A static valve+split-now design
+  named the second recording's file by the earlier stop or ~7 s late; the
+  per-recording branch fixed it: files `154656-000` (150 frames, 5.00 s) and
+  `154704-000` (234 frames, 7.80 s), both finalised and readable. An
+  unfinalised Matroska file was also confirmed playable.

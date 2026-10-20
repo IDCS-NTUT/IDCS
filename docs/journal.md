@@ -381,3 +381,19 @@ State at the hand-over (2026-10-20):
   YOLO mode is 8 Mbit/s). 15 GB therefore holds ~1.8 h of visual-lock or ~4 h
   of YOLO footage before the oldest segments rotate out. Pi overlay p95 11.7 ms
   right after activation.
+
+## 2026-10-20 - recordings did not play normally: per-segment zero start
+
+- The project lead could not play the recordings normally (VLC). Cause:
+  splitmuxsink keeps one timeline per recording, so segment -001 starts at
+  1:00, -002 at 2:00, etc.; frame spacing also follows arrival (16-91 ms).
+- Existing footage: joined per recording into MP4s starting at 0:00 on the PC
+  (`~/idcs-recordings/export/`, GStreamer splitmuxsrc -> mp4mux, no re-encode).
+  The hand test (16:07) is in `20261020T160545-return.mp4` at ~1:14-2:20; its
+  Pi segments had already rotated out (continuous recording since 16:05 hit
+  the 15 GB budget in ~2.6 h), so only the PC copies remain.
+- Recorder rewritten: one queue -> h264parse -> matroskamux -> filesink branch
+  per segment, pad offset so each file starts at 0:00, next segment attached
+  before the old one's EOS. Pi test: 5 s file and 10.0/10.1/5.0 s segments, all
+  start 0.000, 752 frames for 750 expected (no gap, ~2 frames overlap).
+- Clock note: Jetson wall clock +2.2 s vs PC/Pi (not NTP-synced since 13 Oct).

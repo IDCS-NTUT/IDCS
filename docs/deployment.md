@@ -4,7 +4,20 @@ This document replaces source-path claims in historical handovers. A release
 being present, a Git tag being fetched, and a process actually using it are
 different states. Repository synchronization is separate from deployment.
 
-## Last recorded deployment (2026-10-19)
+## Last recorded deployment (2026-10-20)
+
+Commit `db21d48` / tag `deploy-102` is installed on PC, Jetson and Pi from
+`~/Desktop/project/IDCS-releases/deploy-102`. On top of deploy-99 it adds the
+managed visual-lock source modes (Camera / Visual lock, Simulator / Visual
+lock with a single-drone PC stack), box-size presets, release/loss returning
+the box, the overlay queue and CUDA input defaults, and the bounded DCF-only
+hold (default 12,30). deploy-100 was tagged but never installed; deploy-101
+was installed earlier the same day. No config values changed from deploy-101.
+Validation PC 369 passed/4 skipped, Jetson 392, Pi 82; activation Jetson ->
+Pi -> PC verified; audit clean. Physical bridge/serial/controller/HIL units
+remain inactive (hardware hold). Logs: `IDCS-build/deploy102-*.log`.
+
+## Earlier deployment (2026-10-19)
 
 Commit `11cf19e` / tag `deploy-99` is installed on PC, Jetson and Pi from
 `~/Desktop/project/IDCS-releases/deploy-99`. It merges live configuration

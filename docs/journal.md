@@ -318,3 +318,16 @@ State at the hand-over (2026-10-20):
   13.3 -> 12.7 ms with the hold).
 - Not merged; needs more footage (live SIM single drone, real camera) before a
   default.
+
+## 2026-10-20 - DCF-only hold made default; deploy-102 rolled out
+
+- Project lead: make the hold the default and try it live. `DEFAULT_DCF_HOLD =
+  "12,30"`; `IDCS_VPI_DCF_HOLD=off` disables. PC suite 1467 passed, same
+  environmental failure set.
+- deploy-102 (`db21d48`): a first `deploy-102` tag was created on the wrong
+  commit (before fast-forwarding `main`) and deleted within seconds, never
+  staged or pushed, then recreated on `db21d48`. Config policy empty (no
+  config change since deploy-101). Jetson assets linked as before plus the
+  release-built visual-lock libraries. Validation PC 369/4 skipped, Jetson
+  392, Pi 82; activation Jetson -> Pi -> PC verified first time; audit: all
+  units reference deploy-102; bridge/serial/controller inactive.

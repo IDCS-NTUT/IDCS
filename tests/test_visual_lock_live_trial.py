@@ -75,7 +75,7 @@ def test_return_cadence_keeps_source_metadata_without_duplicating_images():
 
 def test_panel_roi_snapshots_are_isolated_from_ordinary_controller():
     assert resolve_snapshot_bind(None, panel_roi=True) == "tcp://0.0.0.0:5597"
-    assert resolve_snapshot_bind(None, panel_roi=False) == "tcp://0.0.0.0:5564"
+    assert resolve_snapshot_bind(None, panel_roi=False) == "tcp://0.0.0.0:5597"
     with pytest.raises(ValueError):
         resolve_snapshot_bind("tcp://0.0.0.0:5564", panel_roi=True)
 

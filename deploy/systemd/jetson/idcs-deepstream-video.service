@@ -1,4 +1,5 @@
 [Unit]
+Conflicts=idcs-visual-lock-camera.service idcs-visual-lock-sim.service
 Description=IDCS control-free DeepStream video pipeline
 Wants=network-online.target
 After=network-online.target

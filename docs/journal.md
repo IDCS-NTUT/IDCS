@@ -81,3 +81,66 @@ State at the hand-over (2026-10-20):
   the single streaming thread. Basis: the SIM A/B above. Pending: one camera
   A/B with the room lit (the camera input path differs from SIM). No deployed
   unit runs `live_trial`.
+
+## 2026-10-20 - managed visual-lock console candidate (offline Windows)
+
+- Base `3327594`, branch `codex/visual-lock-console`; local Windows/Python3.14
+  checkout only. No lab host, camera/GPU device, GPIO, serial, bridge, HIL or
+  motor was contacted or activated. Nothing deployed, pushed, tagged or sent
+  to another service. Existing recordings, model bytes and rollback sources
+  are retained. This entry is candidate software evidence, not live acceptance.
+- Added exclusive `camera_visual_lock` / `sim_visual_lock` source transactions,
+  per-mode session/clock/video readiness, normal-source stop lists and exact
+  previous-mode rollback. Camera retains the existing shadow controller; SIM
+  uses the PC Swarm software session. Detector lock/expiry/catalog/class/score
+  actions cannot alter visual selection, including a mixed/offline PC state.
+- Only an explicit matching `--managed-mode` permits V2 port5564; all plain
+  trials now default to5597 and refuse5564. Fixed seeds/NvDCF handoff remain
+  isolated. Exact cache and return-frame identity, ABI4, Harris0.5, CUDA input,
+  overlay queue and gates are unchanged. Loss/refusal releases request state,
+  clears cached pixels and prepares resources without reseeding. Repeated
+  request-scoped terminal status returns Pi to explicit box selection after a
+  readable GPIO12 OFF; receiver shutdown publishes an empty selection.
+- Normal Pi display/menu now supplies Select box / Release / Box size without
+  a trial flag or replacement display. Pi-local JSON persists Small64x48,
+  Medium96x72 (default), Large160x120 and X-large240x180; opening centres and
+  clamps the preset, retaining optional fine resizing. Panel/source/video/
+  session/E-stop fail-closed rules remain. Physical Pi output keeps its ROI
+  auto block; only the PC loopback SIM panel bridge accepts a fresh matching
+  managed lease plus receiver acceptance and physical-panel freshness. It
+  never consumes a trial lease as managed authority. No controller code or
+  physical-unit list changed. The aiming test uses real schema-valid V2
+  `visual` tracks without a detector class/range and verifies camera-centre
+  aiming with no parallax.
+- New Jetson unit templates are not enabled at boot, conflict with both
+  detector owners and use release-local native libraries. Runtime preparation
+  builds the ABI4 tracker/live-surface adapter; deployment validation checks
+  presence/digests without loading GPU libraries. Inventory accepts exactly
+  the two named additions and rollback restores their prior absence even if
+  installation failed early. Hardware/shadow templates have a SIM-overlay
+  regression guard. Managed config fields are explicitly restart-tier.
+- Managed evidence retains eight bounded session slots per source under
+  `/var/lib/idcs/visual-lock/{camera,sim}`: frame/acquisition logs32/8MB,
+  first64 seed diagnostics, input capture<=256MB/1805s, existing ~20MB return
+  cap, bounded summaries/health/report. Full files stop collecting, not
+  tracking; full session slots refuse startup until reviewed archival. No
+  automatic pruning. Camera input capture stays unsupported/empty.
+- Verification on this machine (logs under ignored
+  `artifacts/visual-lock-console/`; pristine base retained under ignored
+  `.task-tmp/visual-lock-console-baseline`, with its source tar also retained):
+  - `python -m compileall -q common/return_frame_identity.py jetson/operator_agent.py jetson/visual_lock rpi/operator_display.py rpi/display tools/deployment.py tools/sim_panel.py`: passed.
+  - `python -m pytest -q tests/test_managed_visual_lock.py tests/test_operator_agent.py tests/test_deployment.py tests/test_visual_lock_live_trial.py tests/test_roi_editor.py tests/test_roi_panel_workflow.py tests/test_camera_roi.py tests/test_sim_panel.py tests/test_operator_display.py tests/test_range_guard.py tests/test_return_frame_identity.py tests/test_visual_lock_acquisition.py tests/test_visual_roi_seed.py`: 219 passed,9 skipped.
+  - `python -m pytest -q tests/test_live_config.py tests/test_deepstream_target_selection.py tests/test_panel_config_menu.py`:183 passed. Historical baseline comparison now permits exactly the two new source modes/stop-list additions and retains all other effective-value checks.
+  - `python -m pytest -q tests/test_managed_visual_lock.py tests/test_deepstream_target_selection.py tests/test_shared_config.py tests/test_panel_config_menu.py`:188 passed at the config-integration checkpoint.
+  - Full untouched-base suite with `python -m pytest -q --continue-on-collection-errors`:1322 passed,55 skipped,10 failed,8 collection errors,20 subtests passed. Eight collection errors are missing GI/Pillow. Failures include missing Pillow/trimesh, Windows temp-path casing, absent retained gimbal-fit fixtures, and one transient Windows git subprocess handle error in the old config comparison (that pristine-base test passed separately on retry).
+  - Full candidate suite `python -m pytest -q tests --continue-on-collection-errors`: 1368 passed,55 skipped,9 failed,8 collection errors,20 subtests passed (162.44s). All nine failing test cases and eight collection-error modules also failed on the pristine base; no new failures/errors. Final log: `artifacts/visual-lock-console/final-reviewed-full.log`; comparison: `comparison.json` in that directory.
+  - `git diff --check`: passed. New contract tests use deterministic backends,
+    fake unit/PC runners, temporary files and headless menu imports; no actual
+    systemd or rendering runs are represented by those passes.
+- Not verified here: Jetson CMake/VPI/Argus build and native lifetime tests,
+  real systemd plan/validate, Pi native rendering and persisted menu operation,
+  PC OpenGL closed-loop SIM demo, camera quality/endurance and panel electrical
+  operation. The exact Jetson/Pi/PC build, plan/validate, SIM demo, camera and
+  recovery checklist is in `docs/visual_lock.md`; operator/launch/config/key
+  inventory docs are updated. Review/bench qualification remains separate;
+  no motor commands are in that checklist.

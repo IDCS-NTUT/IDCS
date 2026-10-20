@@ -48,7 +48,9 @@ SELECTION_PERIOD_S = 0.2
 UNIT_POLL_S = 2.0
 PERCEPTION_STALE_S = 1.0
 MODE_UNITS = frozenset({"idcs-camera.target", "idcs-deepstream-camera.service",
-                        "idcs-controller-camera.service", "idcs-deepstream-video.service"})
+                        "idcs-controller-camera.service", "idcs-deepstream-video.service",
+                        "idcs-visual-lock-camera.service", "idcs-visual-lock-sim.service"})
+VISUAL_LOCK_MODES = frozenset(("camera_visual_lock", "sim_visual_lock"))
 MOTOR_UNITS = frozenset({"idcs-hil.target", "idcs-bridge.service", "idcs-serial.service",
                          "idcs-controller.service"})
 
@@ -64,6 +66,7 @@ class Mode:
     ready_units: tuple[str, ...] = ()
     pc_ready_units: tuple[str, ...] = ()
     source_clock: str = ""
+    health_file: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -107,7 +110,8 @@ class AgentConfig:
 
             mode = Mode(str(name), str(raw.get("label") or name), units("start"), units("stop"),
                         units("pc_start"), units("pc_stop"), units("ready_units"),
-                        units("pc_ready_units"), str(raw.get("source_clock") or ""))
+                        units("pc_ready_units"), str(raw.get("source_clock") or ""),
+                        Path(str(raw["health_file"])) if raw.get("health_file") else None)
             if any(u not in MODE_UNITS for u in (*mode.start, *mode.stop, *mode.ready_units)):
                 raise ConfigError(f"operator.modes.{name}: non-video Jetson unit")
             if any((verb, u) not in PC_ACTIONS for verb, us in
@@ -119,6 +123,20 @@ class AgentConfig:
                 raise ConfigError(f"operator.modes.{name}: unknown source clock")
             if mode.start and not mode.source_clock:
                 raise ConfigError(f"operator.modes.{name}: video source clock required")
+            if mode.name in VISUAL_LOCK_MODES:
+                source = mode.name.removesuffix("_visual_lock")
+                owner = f"idcs-visual-lock-{source}.service"
+                expected = {owner, "idcs-controller-camera.service"} if source == "camera" else {owner}
+                pc_start = ("idcs-camera-ui.service",) if source == "camera" else ("idcs-sim-swarm.target",)
+                pc_ready = {"idcs-camera-ui.service"} if source == "camera" else {
+                    "idcs-sim-swarm.target", "idcs-sim-session.target", "idcs-sim-swarm-streamer.service",
+                    "idcs-sim-panel.service", "idcs-sim-swarm-controller.service", "idcs-sim-ui.service"}
+                if (set(mode.start) != expected or set(mode.ready_units) != expected
+                        or not MODE_UNITS <= set(mode.stop) or mode.pc_start != pc_start
+                        or not pc_ready <= set(mode.pc_ready_units)
+                        or mode.health_file is None or not str(mode.health_file).startswith(("/", "\\"))
+                        or mode.source_clock != ("jetson_monotonic" if source == "camera" else "pc_monotonic")):
+                    raise ConfigError(f"operator.modes.{name}: invalid managed visual-lock owner/readiness")
             modes.append(mode)
         if not modes:
             raise ConfigError("operator.modes must define at least one mode")
@@ -272,6 +290,11 @@ class OperatorAgent:
             return "mixed"
         return next((m.name for m in self.config.modes if not m.start), "none")
 
+    def visual_lock_active(self) -> bool:
+        # Selection authority belongs to the running source even if PC goes
+        # offline and current_mode consequently reports mixed.
+        return bool(self.active_units & {"idcs-visual-lock-camera.service", "idcs-visual-lock-sim.service"})
+
     def motors_live(self) -> bool:
         return any(u in self.active_units for u in self.config.motor_units)
 
@@ -280,16 +303,18 @@ class OperatorAgent:
         mode = self.current_mode()
         sim_cache = getattr(self.pc,'targets',None)
         sim_catalog = (sim_cache.forward(self.clock()) if sim_cache is not None
-                       and mode in ('sim','sim_swarm') else None)
+                       and mode in ('sim','sim_swarm','sim_visual_lock') else None)
         return {
             "mode": "sim" if mode == "sim_swarm" else mode,
             "sim_scene": "swarm" if mode == "sim_swarm" else "single" if mode == "sim" else None,
+            "visual_lock": self.visual_lock_active(),
+            "sim_visual_lock": self.config.mode("sim_visual_lock") is not None,
             "sim_hud_session": None if sim_catalog is None else sim_catalog.catalog.session,
             "sim_scenes": ([{"name": "single", "label": "Single"},
                             {"name": "swarm", "label": "Swarm"}]
                            if self.config.mode("sim") and self.config.mode("sim_swarm") else []),
             "modes": [{"name": m.name, "label": m.label} for m in self.config.modes
-                      if m.name != "sim_swarm"],
+                      if m.name not in ("sim_swarm", "sim_visual_lock")],
             "recording": self.config.recorder_unit in self.active_units,
             **(self.live_settings.status() if getattr(self, "live_settings", None) is not None else {}),
             "motors_live": self.motors_live(),
@@ -313,7 +338,7 @@ class OperatorAgent:
             self._lock_session if self.lock_track_id is not None else session, self.authority_session)
 
     def active_catalog(self) -> CatalogEnvelope | None:
-        if self.busy is not None:
+        if self.busy is not None or self.visual_lock_active():
             return None
         if self.current_mode() == "sim":
             cache = getattr(self.pc, "targets", None)
@@ -362,6 +387,8 @@ class OperatorAgent:
                                     if isinstance(t, Mapping) and isinstance(t.get("track_id"), int))
 
     def expire_lock(self) -> None:
+        if self.visual_lock_active():
+            return
         catalog = self.active_catalog()
         if (self.lock_track_id is not None and catalog is not None
                 and catalog.catalog.source == self._lock_source and catalog.catalog.session == self._lock_session
@@ -393,6 +420,9 @@ class OperatorAgent:
     def handle(self, command: OperatorCommand) -> tuple[bool, str]:
         if command.command == "status":
             return True, self.last_message
+        if (self.visual_lock_active() and command.command in
+                ("lock", "release", "selection_mode", "target_classes", "clear_swarm_score")):
+            return self._refuse("visual lock owns selection: use Select box / Release")
         if command.command == 'clear_swarm_score':
             if self.busy is not None or self.pc.pending():
                 return self._refuse('busy: score reset unavailable')
@@ -481,7 +511,10 @@ class OperatorAgent:
                 or self._fresh_frames < 3):
             return False
         try:
-            health = json.loads(self.config.health_file.read_text())
+            health = json.loads((mode.health_file or self.config.health_file).read_text())
+            if mode.name in VISUAL_LOCK_MODES and (health.get("managed_mode") != mode.name
+                    or health.get("tracker_session") != self._camera_session):
+                return False
             last = float(health["last_frame_monotonic_s"])
             return (began <= last <= self.clock() and self.clock() - last <= 2.0
                     and int(health["frames"]) >= 3 and int(health["return_frames"]) > 0)

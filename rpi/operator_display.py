@@ -39,8 +39,8 @@ from common.operator_commands import OperatorCommand  # noqa: E402
 from rpi.display.config_menu import ConfigMenu, fire_control_enabled
 from rpi.display.commands import CommandClient  # noqa: E402
 from rpi.display.inputs import KeyboardInput, PanelNavigator  # noqa: E402
-from rpi.display.menu import Action, Menu, NavEvent, Page, Settings  # noqa: E402
-from rpi.display.roi_editor import RoiEditor  # noqa: E402
+from rpi.display.menu import Action, Choice, Menu, NavEvent, Page, Settings  # noqa: E402
+from rpi.display.roi_editor import RoiEditor, ROI_SETTINGS  # noqa: E402
 from rpi.display.roi_panel import RoiPanelWorkflow  # noqa: E402
 from rpi.display.render import StatusBar, TargetBox, render  # noqa: E402
 from rpi.display.status import SystemStatus  # noqa: E402
@@ -55,7 +55,7 @@ from rpi.display.hud import PanelHudState, PiHudRenderer  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TICK_S = 1 / 30
 DEFAULT_SETTINGS_PATH = Path.home() / ".config" / "idcs" / "operator_display.json"
-SETTINGS = {}  # Required authority/safety/selection/recording strip cannot be hidden.
+SETTINGS = ROI_SETTINGS  # Pi-local preferences; the safety strip cannot be hidden.
 
 log = logging.getLogger("rpi.operator_display")
 
@@ -141,10 +141,16 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
                hud_details: Callable[[], list[str]] = lambda: ['No HUD telemetry'],
                roi_preview: Callable[[], None] = lambda: None,
                visual_roi_trial: bool = False,
-               roi_available: Callable[[], bool] = lambda: False) -> Menu:
+               roi_available: Callable[[], bool] = lambda: False,
+               roi_release: Callable[[], None] = lambda: None) -> Menu:
     version = _version()
 
+    def visual_mode() -> bool:
+        return status.agent_state.get('mode') in ('camera_visual_lock','sim_visual_lock')
+
     def picker_items() -> list[Action]:
+        if visual_mode():
+            return [Action('Select box',roi_preview), Action('Release',roi_release)]
         items = []
         envelope = status.agent_state.get("target_catalog") or {}
         catalog = envelope.get("catalog") or {}
@@ -163,7 +169,10 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
                                 key=("track", row.track_id), value=value))
         return items
 
-    def target_items() -> list[Page | Action]:
+    def target_items() -> list[Page | Action | Choice]:
+        if visual_mode() or visual_roi_trial:
+            return [Action('Select box',roi_preview), Action('Release',roi_release),
+                    Choice('Box size','roi_box_size')]
         planner = status.agent_state.get('selection_mode') != 'operator'
         return [Action('Planner selection',
                        lambda: send(OperatorCommand('selection_mode',
@@ -173,22 +182,27 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
 
     def sim_scene_items() -> list[Action]:
         state = status.agent_state
-        return [Action(scene['label'],
+        items = [Action(scene['label'],
                        lambda name=scene['name']: send(OperatorCommand('set_mode',mode='sim',scene=name)),
                        confirm=f"Switch to Simulator / {scene['label']}?",
                        key=('sim_scene',scene['name']),
                        value='current' if state.get('mode')=='sim' and state.get('sim_scene')==scene['name'] else None)
                 for scene in state.get('sim_scenes') or ()
                 if isinstance(scene,dict) and scene.get('name') in ('single','swarm') and 'label' in scene]
+        if state.get('sim_visual_lock'):
+            items.append(Action('Visual lock',lambda: send(OperatorCommand('set_mode',mode='sim_visual_lock')),
+                confirm='Switch to Simulator / Visual lock?',key=('mode','sim_visual_lock'),
+                value='current' if state.get('mode') == 'sim_visual_lock' else None))
+        return items
 
     def mode_items() -> list[Page | Action]:
         state = status.agent_state
         current = state.get("mode")
-        return [Page(m['label'],items=sim_scene_items) if m['name']=='sim' and state.get('sim_scenes') else
+        return [Page(m['label'],items=sim_scene_items) if m['name']=='sim' and (state.get('sim_scenes') or state.get('sim_visual_lock')) else
                 Action(m["label"], lambda name=m["name"]: send(OperatorCommand("set_mode", mode=name)),
                        confirm=f"Switch to {m['label']}?", key=("mode", m["name"]),
                        value="current" if m["name"] == current else None)
-                for m in state.get("modes") or () if isinstance(m, dict) and "name" in m]
+                for m in state.get("modes") or () if isinstance(m, dict) and "name" in m and m["name"] != "sim_visual_lock"]
 
     def class_items() -> list[Action]:
         state = status.agent_state
@@ -293,7 +307,7 @@ class OperatorDisplay:
         self._roi_manual_seen = False
         self.menu = build_menu(self.status, self.settings, config, self._send,
                                self._hud_details, self._start_roi_preview, visual_roi_trial,
-                               lambda: self._sim_roi_source_available(time.monotonic()))
+                               lambda: self._sim_roi_source_available(time.monotonic()), self._menu_release_roi)
         self.config_menu = ConfigMenu(self._send_config,
             lambda: fire_control_enabled(self.status, time.monotonic()))
         self.menu.config_menu = self.config_menu
@@ -323,7 +337,7 @@ class OperatorDisplay:
         self.roi_control_pub = None
         self._pending_roi_request = None
         self._pending_roi_started_s = 0.0
-        if visual_roi_trial:
+        if config.visual_roi_seed and config.roi_lamp_endpoint and config.roi_control_endpoint:
             self.roi_control_pub = self.ctx.socket(zmq.PUB)
             self.roi_control_pub.setsockopt(zmq.LINGER, 0)
             self.roi_control_pub.setsockopt(zmq.SNDHWM, 1)
@@ -352,9 +366,42 @@ class OperatorDisplay:
         self.hud_messages = 0
         self.last_hud_source = 'UNAVAILABLE'
 
+    @property
+    def roi_tracking(self) -> bool:
+        return self.visual_roi_trial or self.status.agent_state.get('mode') in ('camera_visual_lock','sim_visual_lock')
+
+    def _roi_terminal(self, request_id: str, reason: str | None, now: float) -> None:
+        if self.roi_workflow.result(request_id,False):
+            self._pending_roi_request = None
+            self._roi_request_session = None
+            self.status.show_notice(f'ROI ended: {reason or "lost"}; GPIO12 OFF selects again',now)
+
+    def _roi_sim_lease(self, now: float) -> dict:
+        panel = self.status.panel_state
+        enabled = (not self.visual_roi_trial and self.status.agent_state.get('mode') == 'sim_visual_lock'
+            and self.roi_workflow.state == 'tracking' and self.roi_workflow.request_id is not None
+            and self._sim_roi_source_available(now) and self.status.panel.live(now) and self.status.video.live(now)
+            and panel.get('manual_active') is True and panel.get('emergency') is False
+            and (panel.get('inputs_valid') or {}).get('fire_control') is True
+            and (panel.get('inputs') or {}).get('fire_control') is True)
+        return dict(type='roi_sim_lease_v1',enabled=bool(enabled),managed_mode='sim_visual_lock',
+                    request_id=self.roi_workflow.request_id if enabled else None,
+                    tracker_session=self._roi_request_session if enabled else None)
+
+    def _menu_release_roi(self) -> None:
+        request = self.roi_workflow.disarm()
+        self._release_roi(request)
+        self.status.show_notice('ROI released; GPIO12 OFF selects again',time.monotonic())
+
     def tick(self) -> bool:
         now = time.monotonic()
         self._read_messages(now)
+        if self.roi_workflow.active and not self.visual_roi_trial and (not self.roi_tracking or not self._sim_roi_source_available(now)):
+            request = self.roi_workflow.request_id
+            self.roi_workflow.close()
+            self._release_roi(request)
+            self.roi_editor.active = False
+            self.status.show_notice('ROI closed: source mode changed or stale',now)
         if self.roi_lamp_pub is not None:
             panel = self.status.panel_state
             available = (self.roi_editor.active and self._sim_roi_source_available(now)
@@ -368,18 +415,18 @@ class OperatorDisplay:
                                             flags=zmq.NOBLOCK)
             except zmq.Again:
                 pass
-        if self.visual_roi_trial and self.roi_editor.active:
+        if self.roi_tracking and self.roi_editor.active:
             self._update_roi_panel(now)
         if self.roi_control_pub is not None:
             try:
-                self.roi_control_pub.send_json(self.roi_workflow.sim_lease(), flags=zmq.NOBLOCK)
+                self.roi_control_pub.send_json(self._roi_sim_lease(now), flags=zmq.NOBLOCK)
             except zmq.Again:
                 pass
         if self._pending_roi_request is not None and now - self._pending_roi_started_s > 2.0:
             request_id = self.roi_workflow.disarm()
             self._release_roi(request_id)
             self.status.show_notice('ROI response timed out; tracking status unknown', now)
-        if self.roi_editor.active and not self.visual_roi_trial and not self._roi_preview_allowed(now):
+        if self.roi_editor.active and not self.roi_tracking and not self._roi_preview_allowed(now):
             self.roi_editor.active = False
             self.status.show_notice('ROI preview closed: source or panel unavailable', now)
         if now >= self._next_rescan_s:
@@ -407,7 +454,7 @@ class OperatorDisplay:
                     feedforward_state=self.hud_renderer.feedforward, hud_messages=self.hud_messages,
                     overlay_build_p95_ms=None if not samples else samples[min(len(samples) - 1, int(.95 * len(samples)))],
                     overlay_build_max_ms=max(samples) if samples else None,
-                    timing_qualification='exact return-frame join is trial-only; photon/transit latency unqualified')
+                    timing_qualification='exact ROI return-frame join; photon/transit latency unqualified')
                 frame = self.video.frame_identity.latest()
                 report['return_frame_identity'] = dict(matched=self.video.frame_identity.matched,
                     unmatched=self.video.frame_identity.unmatched,
@@ -417,7 +464,7 @@ class OperatorDisplay:
                         frame_id=frame.frame_id,source_time_ns=frame.source_time_ns,
                         source_clock_domain=frame.source_clock_domain))
                 report['return_receiver'] = self.video.receiver_stats()
-                report['roi'] = dict(enabled=self.visual_roi_trial,active=self.roi_editor.active,
+                report['roi'] = dict(enabled=self.roi_tracking,active=self.roi_editor.active,
                     state=self.roi_workflow.state,source_available=self._sim_roi_source_available(now),
                     request_id=self.roi_workflow.request_id)
                 if self.identity_receiver is not None:
@@ -436,9 +483,17 @@ class OperatorDisplay:
                     continue
                 try:
                     if identity.get('type') == 'visual_roi_status_v1':
-                        self.roi_source.observe(identity, received_s)
+                        mode = self.status.agent_state.get('mode') if not self.visual_roi_trial else None
+                        if not self.visual_roi_trial and not self.status._agent_recent(now):
+                            mode = None
+                        if self.roi_source.observe(identity, received_s, managed_mode=mode):
+                            if (identity.get('terminal_request_id') == self.roi_workflow.request_id
+                                    and self.roi_workflow.request_id is not None):
+                                self._roi_terminal(identity['terminal_request_id'],identity.get('reason'),now)
                     elif identity.get('type') == 'visual_roi_result_v1':
-                        if identity.get('request_id') == self._pending_roi_request:
+                        if identity.get('accepted') is False and identity.get('request_id') == self.roi_workflow.request_id:
+                            self._roi_terminal(identity['request_id'],identity.get('reason'),now)
+                        elif identity.get('request_id') == self._pending_roi_request:
                             self._pending_roi_request = None
                             accepted = identity.get('accepted') is True
                             if self.roi_workflow.result(identity['request_id'], accepted):
@@ -484,7 +539,7 @@ class OperatorDisplay:
                 log.debug("bad panel state: %s", exc)
             else:
                 self.status.on_panel(panel, now)
-                if (panel.get("manual_active") or panel.get("emergency")) and not self.visual_roi_trial:
+                if (panel.get("manual_active") or panel.get("emergency")) and not self.roi_tracking:
                     self.roi_editor.active = False
                 if self.menu.picker_active and (panel.get("manual_active") or panel.get("emergency")):
                     self.menu._close()
@@ -496,13 +551,13 @@ class OperatorDisplay:
         if not self._roi_preview_allowed(now):
             self.status.show_notice('ROI preview needs live source video and panel', now)
             return
-        if self.visual_roi_trial and self.video.frame_identity.latest() is None:
+        if self.roi_tracking and self.video.frame_identity.latest() is None:
             self.status.show_notice('ROI refused: exact return frame identity unavailable', now)
             return
         self.menu._close()
-        self.roi_editor.open(*self.video.frame_size, tracking_trial=self.visual_roi_trial,
-                             direct_select=self.visual_roi_trial)
-        if self.visual_roi_trial:
+        self.roi_editor.open(*self.video.frame_size, tracking_trial=self.roi_tracking,
+                             direct_select=self.roi_tracking, box_size=self.settings["roi_box_size"])
+        if self.roi_tracking:
             self.roi_workflow.open()
             self._roi_manual_seen = False
             if self.roi_lamp_pub is not None:
@@ -584,7 +639,7 @@ class OperatorDisplay:
         # The joystick can open the menu before Manual is selected, provided
         # auto control is already off. Manual may then be selected on the panel.
         permitted_panel = (panel.get('manual_active') is True or
-                           panel.get('control_cmd_enabled') is False) if self.visual_roi_trial else (
+                           panel.get('control_cmd_enabled') is False) if self.roi_tracking else (
                                panel.get('manual_active') is False)
         return (self._sim_roi_source_available(now)
                 and self.status.video.live(now)
@@ -593,8 +648,13 @@ class OperatorDisplay:
                 and not panel.get('emergency'))
 
     def _sim_roi_source_available(self, now: float) -> bool:
-        if self.visual_roi_trial:
+        if self.roi_tracking:
             now = time.monotonic()
+            if not self.visual_roi_trial:
+                state = self.status.agent_state
+                if (not self.status._agent_recent(now) or state.get('busy')
+                        or self.roi_source.source_mode != state.get('mode','').removesuffix('_visual_lock')):
+                    return False
             # Exact displayed identity is required to START a lock. Once a
             # request names that session, a temporarily late image sideband
             # must not release it while the same verified receiver stays live.
@@ -608,7 +668,7 @@ class OperatorDisplay:
 
     def _handle_navigation(self, event) -> None:
         if self.roi_editor.active:
-            if self.visual_roi_trial:
+            if self.roi_tracking:
                 if event is NavEvent.SELECT and self.roi_workflow.state != 'selecting':
                     return
                 if self.roi_editor.handle(event) == 'cancel':
@@ -622,6 +682,11 @@ class OperatorDisplay:
         self.menu.handle(event)
 
     def _send(self, command: OperatorCommand) -> None:
+        if command.command == 'set_mode' and self.roi_workflow.active:
+            request = self.roi_workflow.request_id
+            self._release_roi(request)
+            self.roi_workflow.close()
+            self.roi_editor.active = False
         if self.commands is None:
             self.status.show_notice("No operator agent configured", time.monotonic())
             return
@@ -656,13 +721,13 @@ class OperatorDisplay:
             row = rows[key[1]]
             if row.box is not None and not row.selected:
                 boxes.append(TargetBox(row.box, row.display_name(len(rows)>1), "cursor"))
-        if self.roi_editor.active and (not self.visual_roi_trial or
+        if self.roi_editor.active and (not self.roi_tracking or
                 (self.roi_workflow.state == 'selecting' and
                  self.status.panel_state.get('manual_active') is True and
                  (self.status.panel_state.get('inputs') or {}).get('fire_control') is False)):
             boxes.append(TargetBox(self.roi_editor.box(),
                                    ('ROI SIZE' if self.roi_editor.resizing else 'ROI SELECT')
-                                   if self.visual_roi_trial else 'ROI PREVIEW', 'cursor'))
+                                   if self.roi_tracking else 'ROI PREVIEW', 'cursor'))
         return tuple(boxes)
 
     def _draw(self, now: float) -> None:
@@ -670,18 +735,18 @@ class OperatorDisplay:
             source_session=self.status.hud_source_session(), agent_fresh=self.status._agent_recent(now),
             video_live=self.status.video.live(now))
         self.last_hud_source = hud_view.source
-        roi_return = self.visual_roi_trial and self._sim_roi_source_available(now)
+        roi_return = self.roi_tracking and self._sim_roi_source_available(now)
         if roi_return:
-            self.last_hud_source = 'ISOLATED ROI'
+            self.last_hud_source = 'ISOLATED ROI' if self.visual_roi_trial else 'VISUAL LOCK'
         view = self.roi_editor.view() if self.roi_editor.active else self.menu.view()
         information_open = getattr(view, 'kind', None) == 'info'
         # Information pages replace only the ordinary HUD. Keep source,
         # authority, recording, fire and E-stop in the foreground receiver
         # layer, even if the diagnostic panel occupies much of the frame.
         bar = StatusBar(self.status.panel_mode(now),
-                        (None if roi_return else self.status.agent_text(now, include_source=information_open),
+                        (None if roi_return and self.visual_roi_trial else self.status.agent_text(now, include_source=information_open),
                          *([f'ROI {self.roi_workflow.state.upper()}']
-                           if self.visual_roi_trial and self.roi_editor.active
+                           if self.roi_tracking and self.roi_editor.active
                            and self.roi_workflow.state in ('selecting','pending') else [])))
         alerts = self.status.alerts(now)
         fire_state = self.status.fire_text(now)

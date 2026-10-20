@@ -240,7 +240,9 @@ class SystemStatus:
         parts = [str(state.get("busy") or state.get("mode") or "?")] if include_source else []
         if not include_source and state.get('busy'):
             parts.append('TRANSITION')
-        if state.get("selection_mode"):
+        if state.get("mode") in ("camera_visual_lock","sim_visual_lock"):
+            parts.append("VISUAL LOCK")
+        elif state.get("selection_mode"):
             parts.append("OPERATOR TARGET" if state["selection_mode"] == "operator" else "PLANNER")
         parts.append('REC' if state.get('recording') else 'REC OFF')
         return " ".join(parts)

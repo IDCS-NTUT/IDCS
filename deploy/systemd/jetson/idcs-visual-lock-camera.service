@@ -1,0 +1,22 @@
+[Unit]
+StartLimitIntervalSec=60
+StartLimitBurst=5
+Description=IDCS managed camera VPI visual lock (no detector or motor owner)
+Conflicts=idcs-deepstream-camera.service idcs-deepstream-video.service idcs-visual-lock-sim.service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=idcs
+WorkingDirectory=@RELEASE@
+Environment=PYTHONPATH=@RELEASE@ PYTHONUNBUFFERED=1
+ExecStartPre=/home/idcs/Desktop/project/bin/python tools/runtime_process_guard.py --module jetson.visual_lock.live_trial --module jetson.deepstream.runtime
+ExecStartPre=/home/idcs/Desktop/project/bin/python -m jetson.visual_lock.live_trial --managed-mode camera_visual_lock --source camera --argus-flip-method 2 --argus-wb-mode 3 --library @RELEASE@/build/visual-lock/libidcs_visual_lock.so --surface-library @RELEASE@/build/visual-lock/libidcs_visual_lock_live_surface.so --output /var/lib/idcs/visual-lock/camera --health-file /run/idcs/visual-lock-camera-health.json --duration-s 0 --source-wait-s 60 --roi-bind tcp://0.0.0.0:5596 --return-identity-bind tcp://0.0.0.0:5595 --snapshot-bind tcp://0.0.0.0:5564 --return-host 192.168.0.1 --return-host 192.168.0.3 --provenance @RELEASE@ --check
+RuntimeDirectory=idcs
+StateDirectory=idcs/visual-lock/camera
+ExecStart=/home/idcs/Desktop/project/bin/python -m jetson.visual_lock.live_trial --managed-mode camera_visual_lock --source camera --argus-flip-method 2 --argus-wb-mode 3 --library @RELEASE@/build/visual-lock/libidcs_visual_lock.so --surface-library @RELEASE@/build/visual-lock/libidcs_visual_lock_live_surface.so --output /var/lib/idcs/visual-lock/camera --health-file /run/idcs/visual-lock-camera-health.json --duration-s 0 --source-wait-s 60 --roi-bind tcp://0.0.0.0:5596 --return-identity-bind tcp://0.0.0.0:5595 --snapshot-bind tcp://0.0.0.0:5564 --return-host 192.168.0.1 --return-host 192.168.0.3 --provenance @RELEASE@
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=15
+NoNewPrivileges=true

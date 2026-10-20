@@ -15,6 +15,11 @@ models=${2:-/home/idcs/idcs-models/yolo}
 [[ -d $models ]] || { echo "model directory missing: $models" >&2; exit 2; }
 
 make -C "$runtime/jetson/deepstream"
+# Release-local ABI4 VPI tracker and the production borrowed-NVMM adapter.
+# No test uploader, camera, GPU pipeline or service is started by this build.
+cmake -S "$runtime/jetson/visual_lock/native" -B "$runtime/build/visual-lock" \
+    -DCMAKE_BUILD_TYPE=Release -DIDCS_BUILD_LIVE_SURFACE=ON -DIDCS_BUILD_TEST_SURFACE=OFF
+cmake --build "$runtime/build/visual-lock" -j2
 link="$runtime/assets/models/yolo"
 if [[ -L $link ]]; then
     [[ $(readlink -f "$link") == $(readlink -f "$models") ]] || { echo "$link points elsewhere" >&2; exit 3; }

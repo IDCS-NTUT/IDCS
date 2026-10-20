@@ -13,7 +13,7 @@ Ordinary camera/SIM source switching does not grant that authority.
 
 | Host / systemd scope | Units |
 |---|---|
-| Jetson / system | `idcs-operator-agent`, `idcs-deepstream-video`, `idcs-deepstream-camera`, `idcs-controller-camera`, `idcs-recorder`; hardware `idcs-serial`, `idcs-bridge`, `idcs-controller`; camera/HIL targets |
+| Jetson / system | `idcs-operator-agent`, `idcs-deepstream-video`, `idcs-deepstream-camera`, `idcs-visual-lock-camera`, `idcs-visual-lock-sim`, `idcs-controller-camera`, `idcs-recorder`; hardware `idcs-serial`, `idcs-bridge`, `idcs-controller`; camera/HIL targets |
 | PC / user | `idcs-pc-mode-agent`, `idcs-hud-relay`, `idcs-camera-ui`; Single/Swarm streamers and controllers, shared sim panel/UI/recorder/session; separate HIL streamer/UI |
 | Pi / user | `idcs-manual` (`rpi.runtime_control`), `idcs-operator-display` |
 
@@ -25,7 +25,7 @@ units and manifests. Motor owners must not be enabled for unattended startup.
 
 ## Ordinary source changes
 
-Use the Pi **Operations -> Source & scene** menu: Camera, Simulator -> Single/Swarm, or Standby.
+Use the Pi **Operations -> Source & scene** menu: Camera, Camera / Visual lock, Simulator -> Single/Swarm/Visual lock, or Standby.
 The Jetson operator agent and PC mode agent own the ordered stop/start,
 fresh-source readiness checks and rollback. Do not race their transaction by
 manually starting another source.
@@ -35,6 +35,13 @@ manually starting another source.
 - Single starts the controlled synthetic-observation software mount.
 - Swarm starts the detection-fed software mount; simulator truth is separate
   from visual identities and supplies scoring.
+- Camera / Visual lock replaces DeepStream with the exclusive Argus VPI
+  receiver, existing shadow controller and PC viewer. Simulator / Visual lock
+  uses the exclusive VPI RTP receiver and PC Swarm software session. Neither
+  visual-lock unit is enabled at boot. Targets -> Select box / Release / Box
+  size uses the normal display service; release/loss never changes source.
+  See [visual-lock reviewer checklist](visual_lock.md) for build, readiness,
+  retention, SIM follow and bounded camera qualification before acceptance.
 - PC Single/Swarm targets share a required session for panel/UI/recorder. Restarting
   the viewer cycles that software session and invalidates old source-scoped locks.
 - Motor/HIL activity or unknown unit state blocks menu switching. Mode switching
@@ -61,6 +68,7 @@ actual process cwd/arguments and restart counts together. Check for duplicate
 owners before starting any bounded test.
 
 Health files include Jetson `/run/idcs/deepstream-video-health.json`,
+managed ROI `/run/idcs/visual-lock-{camera,sim}-health.json`,
 HIL controller `/run/idcs-controller/controller-health.json`, and the PC user's
 runtime-directory `idcs-sim/controller-health.json`. A stale file is not a live
 owner; correlate timestamps and PID. Recordings are summarized with

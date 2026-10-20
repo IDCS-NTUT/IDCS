@@ -18,6 +18,7 @@ import time
 
 PHYSICAL = frozenset(('idcs-controller.service', 'idcs-bridge.service',
     'idcs-serial.service', 'idcs-hil.target', 'idcs-hil-streamer.service'))
+MANAGED_VISUAL_UNITS = frozenset(('idcs-visual-lock-camera.service', 'idcs-visual-lock-sim.service'))
 KNOWN_OVERRIDE = 'nested-boxes-20261007.conf'
 CONFIG_ADDITIONS = frozenset(('operator.hud', 'rpi.operator_display.hud_sim_bind'))
 
@@ -185,6 +186,16 @@ def native_profile_assets(source, profile):
     return records
 
 
+def visual_lock_assets(source):
+    """Presence/digests only: never load VPI or acquire a GPU owner."""
+    records = {}
+    for name in ('libidcs_visual_lock.so','libidcs_visual_lock_live_surface.so'):
+        path = Path(source)/'build/visual-lock'/name
+        if not path.is_file(): raise RuntimeError(f'missing visual-lock native asset: {path}')
+        records[name] = dict(path=str(path),resolved=str(path.resolve()),sha256=digest(path.read_bytes()))
+    return records
+
+
 class Deployment:
     def __init__(self, root, role, release, templates=None, config_policy=None):
         self.root, self.role, self.release = Path(root), role, release
@@ -283,8 +294,16 @@ class Deployment:
 
     def plan(self):
         inventory = self.inventory()
-        if set(inventory['units']) != set(self.names()):
+        installed, desired = set(inventory['units']), set(self.names())
+        added = desired - installed
+        if installed - desired or not added <= (MANAGED_VISUAL_UNITS if self.role == 'jetson' else set()):
             raise RuntimeError('installed/template unit inventory differs; review missing/extra units')
+        for name in sorted(added):
+            state = self.state(name)
+            if state.get('ActiveState') != 'inactive' or state.get('FragmentPath'):
+                raise RuntimeError('new visual-lock unit already loaded or active: '+name)
+            inventory['units'][name] = dict(state=state,main_path=str(self.unitdir/name),
+                                           main_text=None,dropins={})
         policy=json.loads(self.config_policy.read_text()) if self.config_policy else {}
         if policy and policy.get('release')!=self.release: raise RuntimeError('config review is for another release')
         reviews=policy.get('reviews',{}).get(self.role,{})
@@ -336,12 +355,14 @@ class Deployment:
             dependencies=self.run(['ldd',library])
             if 'not found' in dependencies: raise RuntimeError('unresolved parser dependency: '+dependencies)
             native['dependencies']=dependencies
+            native['visual_lock']=visual_lock_assets(self.source)
         env = dict(os.environ,PYTHONPATH=str(self.source),PYTHONDONTWRITEBYTECODE='1')
         tests = ['tests/test_operator_agent.py','tests/test_pc_mode.py','tests/test_target_authority.py',
             'tests/test_panel_indicators.py','tests/test_rpi_gpio_config.py','tests/test_operator_menu.py',
             'tests/test_panel_hud.py','tests/test_tracking_reticle.py','tests/test_deepstream_metadata_adapter.py',
             'tests/test_deepstream_accepted_osd.py','tests/test_flight_recorder.py','tests/test_sim_truth_capture.py',
-            'tests/test_ui_style.py','tests/test_hud_design.py','tests/test_video_health.py','tests/test_v2_ui_hud.py','tests/test_v2_hud_attitude.py',
+            'tests/test_managed_visual_lock.py','tests/test_roi_editor.py','tests/test_roi_panel_workflow.py',
+            'tests/test_visual_lock_live_trial.py','tests/test_ui_style.py','tests/test_hud_design.py','tests/test_video_health.py','tests/test_v2_ui_hud.py','tests/test_v2_hud_attitude.py',
             'tests/test_serial_io_ipc.py','tests/test_operator_display.py','tests/test_sim_score.py']
         tests = [p for p in tests if (self.source/p).exists()]
         if self.role=='pc':
@@ -433,7 +454,9 @@ class Deployment:
         previous={n:self.state(n) for n in plan['units']}
         self.check_owners()
         for name,item in plan['units'].items():
-            if previous[name]!=item['old']['state'] or Path(item['old']['main_path']).read_text()!=item['old']['main_text']:
+            path = Path(item['old']['main_path'])
+            actual = path.read_text() if path.exists() else None
+            if previous[name]!=item['old']['state'] or actual!=item['old']['main_text']:
                 raise RuntimeError('owner or installed unit changed since inventory: '+name)
         self.prepare_activation_epoch()
         self.save('rollback.json',dict(previous=previous,units={n:i['old'] for n,i in plan['units'].items()}))
@@ -544,13 +567,22 @@ class Deployment:
         states=self.states(); checks=[]
         if self.role=='jetson' and any(states[n]['ActiveState']=='active' for n in ('idcs-deepstream-video.service','idcs-deepstream-camera.service')):
             checks.append((Path('/run/idcs/deepstream-video-health.json'),lambda r:r['pipeline_fps']>=40 and r['return_fps']>=20))
+        if self.role=='jetson':
+            for source in ('camera','sim'):
+                if states.get(f'idcs-visual-lock-{source}.service',{}).get('ActiveState')=='active':
+                    mode=source+'_visual_lock'
+                    checks.append((Path(f'/run/idcs/visual-lock-{source}-health.json'),
+                        lambda r,mode=mode: r.get('managed_mode')==mode and bool(r.get('tracker_session'))
+                        and 0 <= time.monotonic()-r['last_frame_monotonic_s'] <= 2
+                        and r['frames']>=3 and r['return_frames']>0))
         if self.role=='pc' and any(states[n]['ActiveState']=='active' for n in
                 ('idcs-sim-controller.service','idcs-sim-swarm-controller.service')):
             # Target loss, coast and selection handover are valid in a dynamic
             # Swarm scene. Media health does not qualify detector effectiveness.
             checks.append((Path('/run/user/1000/idcs-sim/controller-health.json'),lambda r:r['ticks']>100 and r['snapshots']>20 and r['last_reason'] in ('tracking','manual','safety_hold','target_invalid','coasting','idle_return','target_switch_hold')))
         if self.role=='pi':
-            checks.append((Path('/home/idcs/.local/state/idcs/operator-display.json'),lambda r:r['video_fps']>=25 and r['overlay_build_p95_ms']<=15 and 'tracking_mode' in r['hud_elements']))
+            checks.append((Path('/home/idcs/.local/state/idcs/operator-display.json'),lambda r:r['video_fps']>=25 and r['overlay_build_p95_ms']<=15 and ('tracking_mode' in r['hud_elements'] or
+                'gpu_return_overlay' in r['hud_elements'] and r.get('roi',{}).get('enabled') is True)))
         result={}
         for path,gate in checks:
             record=json.loads(path.read_text())
@@ -568,7 +600,17 @@ class Deployment:
         if unexpected: raise RuntimeError('mode changed; refuse automatic rollback: '+repr(unexpected))
         self.stop_previous(receipt['previous'])
         for n,item in receipt['units'].items():
-            self.install(item['main_path'],item['main_text'])
+            if item['main_text'] is None:
+                # Only newly installed, backed-up-as-absent unit fragments.
+                # Never remove source directories, evidence or existing units.
+                expected = self.load('plan.json')['units'][n]['desired']
+                path = Path(item['main_path'])
+                if path.exists():
+                    if path.read_text() != expected:
+                        raise RuntimeError('new unit changed before rollback: '+n)
+                    self.run(['sudo','-n','rm','--',item['main_path']])
+            else:
+                self.install(item['main_path'],item['main_text'])
             for path,text in item['dropins'].items(): self.install(path,text)
         self.run(self.ctl+['daemon-reload']); self.restart_previous(receipt['previous']); self.safety()
         restored=self.states()

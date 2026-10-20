@@ -154,3 +154,31 @@ Files named in the journal without a `configs/` path (for example
 `hil_live_ff_20260927.yaml`, `hil_two_axis_20260926.yaml`,
 `v3_live_ff_fast_fixture.yaml`) were trial overrides in the external
 toolkit, not repository configs.
+
+## Managed visual-lock source modes (2026-10-20 candidate)
+
+`operator.modes.camera_visual_lock` replaces the Argus detector owner with
+`idcs-visual-lock-camera.service` plus the unchanged camera shadow controller.
+`operator.modes.sim_visual_lock` replaces the RTP detector owner with
+`idcs-visual-lock-sim.service` and starts the existing PC Swarm software session.
+All source modes stop both possible visual-lock owners before starting a new
+source. New per-mode `health_file` paths are separate from detector readiness;
+V2 source clock and receiver session must match fresh health/return frames.
+The detector target classes, planner selection, catalog lock expiry and score
+reset do not select or release a visual box.
+
+The new units use explicit receiver CLI arguments (camera sensor0/mode4,
+flip2/WB3 matching `controller/local_camera.yaml`, return destinations .1/.3,
+ports5555/5564/5595/5596). Review these arguments with local camera/network
+configuration when staging; these CLI values do not hot-reload from live YAML.
+They use release-local `build/visual-lock` native libraries. The PC SIM panel
+unit reads Pi lease5582 and Jetson receiver status5595; only its existing
+loopback software-mount output can be enabled by a managed visual-lock lease.
+No Jetson physical unit gains SIM settings; a static test guards all four
+hardware/shadow unit templates against `configs/sim/` overlays.
+
+Box presets are display preferences, not shared config: Pi's
+`~/.config/idcs/operator_display.json` key `roi_box_size`, values `Small`,
+`Medium` (default), `Large`, `X-large`. Tracker gates, ABI4, Harris0.5, CUDA
+input and overlay-queue defaults are unchanged. Plain `live_trial` stays on
+isolated5597; only an explicit matching `--managed-mode` permits5564.

@@ -1,4 +1,4 @@
-"""Pure panel authority for opt-in, display-only manual ROI selection.
+"""Pure panel authority for explicit manual ROI selection.
 
 The fire-control contact is lamp-powered. An unreadable sample is never an
 OFF edge, and an ON level seen at entry can never lock a target. No actuator
@@ -77,7 +77,8 @@ class RoiPanelWorkflow:
         self.state = "pending"
 
     def result(self, request_id: str, accepted: bool) -> bool:
-        if not self.active or self.state != "pending" or request_id != self.request_id:
+        if (not self.active or self.state not in ("pending", "tracking")
+                or accepted and self.state != "pending" or request_id != self.request_id):
             return False
         if accepted:
             self.state = "tracking"
@@ -96,7 +97,7 @@ class RoiPanelWorkflow:
         return request_id
 
     def sim_lease(self) -> dict:
-        # ROI tracking is visual only. Never grant the optional SIM controller
-        # an automatic camera-follow lease, even after the tracker accepts.
+        # Isolated trials never grant a camera-follow lease. The managed
+        # display builds its separate SIM-only lease from all fresh gates.
         return {"type": "roi_sim_lease_v1", "enabled": False,
                 "request_id": None}

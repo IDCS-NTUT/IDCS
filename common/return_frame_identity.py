@@ -28,7 +28,7 @@ class DisplayedSourceFrame:
 
 
 class RoiSourceLease:
-    """Fresh control-free ROI receiver status, scoped to source and video session."""
+    """Fresh ROI status, scoped to explicit managed mode, source and video session."""
 
     def __init__(self) -> None:
         self.session: str | None = None
@@ -36,12 +36,17 @@ class RoiSourceLease:
         self.sequence = -1
         self.source_mode: str | None = None
 
-    def observe(self, payload: Mapping[str, object], local_s: float) -> bool:
+    def observe(self, payload: Mapping[str, object], local_s: float, *, managed_mode: str | None = None) -> bool:
         session = payload.get("tracker_session")
         sequence = payload.get("sequence")
+        managed = (managed_mode in ("camera_visual_lock", "sim_visual_lock")
+                   and payload.get("managed_mode") == managed_mode
+                   and payload.get("source_mode") == managed_mode.removesuffix("_visual_lock")
+                   and payload.get("control_disabled") is False)
         if (payload.get("type") != "visual_roi_status_v1"
                 or payload.get("source_mode") not in ("sim", "camera")
-                or payload.get("control_disabled") is not True
+                or not (managed if managed_mode is not None else
+                        payload.get("control_disabled") is True and payload.get("managed_mode") is None)
                 or payload.get("source_ready") is not True
                 or not isinstance(session, str) or not 1 <= len(session) <= 128
                 or type(sequence) is not int or sequence < 0

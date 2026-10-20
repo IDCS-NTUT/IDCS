@@ -150,7 +150,7 @@ def test_sim_scene_switch_uses_ordered_transition_and_reports_nested_mode(config
     agent.wait_idle()
     assert agent.current_mode() == 'sim_swarm'
     assert agent.state()['mode'] == 'sim' and agent.state()['sim_scene'] == 'swarm'
-    assert [m['name'] for m in agent.state()['modes']] == ['camera','sim','standby']
+    assert [m['name'] for m in agent.state()['modes']] == ['camera','sim','camera_visual_lock','standby']
     assert ('PC','stop','idcs-sim.target') in systemd.trace
     assert systemd.trace[-1] == ('PC','start','idcs-sim-swarm.target')
     assert 'idcs-sim-streamer.service' not in agent.pc.active_units
@@ -212,7 +212,7 @@ def test_config_defaults_target_classes_from_swarm_exclusion(config) -> None:
     assert config.default_target_classes == ("drone",)
     assert config.command_bind == "tcp://*:5590"
     assert config.selection_bind == "tcp://127.0.0.1:5591"
-    assert [m.name for m in config.modes] == ["camera", "sim", "sim_swarm", "standby"]
+    assert [m.name for m in config.modes] == ["camera", "sim", "sim_swarm", "camera_visual_lock", "sim_visual_lock", "standby"]
     assert config.pc_bind == "tcp://*:5592"
 
 
@@ -301,6 +301,8 @@ def test_mode_switch_runs_units_and_reports_mode(config) -> None:
         ("Jetson", "stop", "idcs-camera.target"),
         ("Jetson", "stop", "idcs-deepstream-camera.service"),
         ("Jetson", "stop", "idcs-controller-camera.service"),
+        ("Jetson", "stop", "idcs-visual-lock-camera.service"),
+        ("Jetson", "stop", "idcs-visual-lock-sim.service"),
         ("Jetson", "start", "idcs-camera.target"), ("PC", "start", "idcs-camera-ui.service"),
     ]
     assert agent.last_message == "mode Camera ready"
@@ -368,6 +370,8 @@ def test_camera_to_sim_order_and_lock_reset(config):
         ("Jetson", "stop", "idcs-deepstream-camera.service"),
         ("Jetson", "stop", "idcs-controller-camera.service"),
         ("Jetson", "stop", "idcs-deepstream-video.service"),
+        ("Jetson", "stop", "idcs-visual-lock-camera.service"),
+        ("Jetson", "stop", "idcs-visual-lock-sim.service"),
         ("Jetson", "start", "idcs-deepstream-video.service"), ("PC", "start", "idcs-sim.target"),
     ]
     assert agent.current_mode() == "sim" and agent.lock_track_id is None

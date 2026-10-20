@@ -499,3 +499,12 @@ def test_unit_templates_take_camera_settings_from_config():
         text = (root / name).read_text()
         assert '--argus-' not in text and '--return-host' not in text and '--config configs/base' in text
     assert 'configs/controller/local_camera.yaml' in (root / 'idcs-visual-lock-camera.service').read_text()
+
+
+def test_argus_units_can_reach_the_camera_daemon_socket():
+    # nvargus-daemon's socket lives in /tmp; a private /tmp hides it and the
+    # camera receiver fails with "Connecting to nvargus-daemon failed"
+    # (deploy-102, 2026-10-20).
+    for name in ('idcs-visual-lock-camera.service', 'idcs-deepstream-camera.service'):
+        lines = (ROOT/'deploy/systemd/jetson'/name).read_text().splitlines()
+        assert not any(l.strip().startswith('PrivateTmp') for l in lines), name

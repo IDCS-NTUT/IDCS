@@ -331,3 +331,18 @@ State at the hand-over (2026-10-20):
   release-built visual-lock libraries. Validation PC 369/4 skipped, Jetson
   392, Pi 82; activation Jetson -> Pi -> PC verified first time; audit: all
   units reference deploy-102; bridge/serial/controller inactive.
+
+## 2026-10-20 - Camera / Visual lock failed on deploy-102: PrivateTmp hid the Argus socket
+
+- The project lead selected Camera / Visual lock and lost video: the receiver
+  logged "Connecting to nvargus-daemon failed: No such file or directory",
+  never produced a frame, and the operator agent rolled back to Standby
+  ("incoming source/return video did not become ready").
+- Cause (reviewer error): the review fix added `PrivateTmp=true` to
+  `idcs-visual-lock-camera.service`; nvargus-daemon's socket is in /tmp, which
+  the detector camera unit documents ("No PrivateTmp: ..."). The unattended
+  checks only ran the SIM mode and `--check` for camera, so this was missed.
+- Recovery: Camera mode restored through the operator agent (ready; Pi 29.9 fps).
+  Fix: PrivateTmp removed with the same comment, plus a test that no Argus
+  unit sets PrivateTmp. Shipping as deploy-103 with a real Camera / Visual
+  lock mode switch as part of verification.

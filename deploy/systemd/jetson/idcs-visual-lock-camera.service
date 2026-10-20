@@ -20,4 +20,4 @@ Restart=on-failure
 RestartSec=2
 TimeoutStopSec=15
 NoNewPrivileges=true
-PrivateTmp=true
+# No PrivateTmp: the Argus client reaches nvargus-daemon through a socket in /tmp.

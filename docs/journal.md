@@ -447,3 +447,20 @@ State at the hand-over (2026-10-20):
 - Round 3 delegated (`tasks/seamless-roi-idle-probes.md`): attach the probes
   only while the Pi's selecting lease, a pending seed or a lock is live.
   Not merged; production stays on deploy-105.
+
+## 2026-10-20 - seamless ROI v3: idle cost gone; lease teardown crashes; round 4
+
+- Codex `0af9389` (`lab/seamless-roi-v3`): idle uses the off graph; probes and
+  owner queue attach per lease. PC suite 1535 passed, same failure set.
+- Idle A/B, YOLO camera, 60 s x 2 (`IDCS-trials/seamless-roi-probes-20261020/ab-*`):
+  off 60.20/60.21 fps, infer+metadata 11.58/13.30 ms; on 60.20/60.19 fps,
+  11.66/13.37 ms (difference < 0.1 ms). Idle cost resolved.
+- SIM lifecycle (Simulator / Visual lock PC scene, Jetson runtime swapped in
+  under the guard, seamless on): `tools.check_seamless_roi` failed after 0.2 s
+  ("Resource temporarily unavailable", PUSH with IMMEDIATE), its lease
+  expired, and the runtime died: "ROI teardown fault: ROI frame-owner teardown
+  failed: ROI teardown moved off its frame owner". Not shippable; round 4
+  delegated (`tasks/seamless-roi-lifecycle.md`): no ROI fault may stop YOLO,
+  teardown on the frame owner in every exit path, robust helper.
+- System returned to Camera mode (Jetson ~55-60 fps, Pi 29 fps). Pi display
+  self-restarts on video loss: NRestarts 30 since deploy-105 activation.

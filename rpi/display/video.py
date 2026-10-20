@@ -33,16 +33,19 @@ REQUIRED_ELEMENTS = (
     "udpsrc", "rtpbin", "rtpjitterbuffer", "rtph264depay", "h264parse", "v4l2h264dec",
     "videotestsrc", "input-selector", "overlaycomposition", "v4l2convert",
 )
+RECORDING_ELEMENTS = ("tee", "queue", "identity", "splitmuxsink", "matroskamux")
 
 
-def missing_elements(sink: str) -> list[str]:
-    names = [*REQUIRED_ELEMENTS, sink.split()[0]]
+def missing_elements(sink: str, *, recording: bool = False) -> list[str]:
+    names = [*REQUIRED_ELEMENTS, sink.split()[0], *(RECORDING_ELEMENTS if recording else ())]
     return [name for name in names if Gst.ElementFactory.find(name) is None]
 
 
 def pipeline_description(*, port: int, jitter_ms: int, sink: str, width: int, height: int,
                          feedback_host: str | None = None, feedback_port: int = 5003,
-                         sender_report_port: int = 5004) -> str:
+                         sender_report_port: int = 5004, record_segment_s: int | None = None) -> str:
+    # Recording branches attach to this tee per recording (rpi.display.recording).
+    tee = "tee name=return_tee allow-not-linked=true ! " if record_segment_s else ""
     return (
         "input-selector name=select sync-streams=false ! "
         "v4l2convert ! video/x-raw,format=BGRx ! "
@@ -50,7 +53,7 @@ def pipeline_description(*, port: int, jitter_ms: int, sink: str, width: int, he
         f"{sink} "
         + receiver_head(port, jitter_ms, feedback_host=feedback_host,
                         feedback_port=feedback_port, sender_report_port=sender_report_port) +
-        "h264parse ! v4l2h264dec ! video/x-raw,format=I420 ! "
+        f"h264parse ! {tee}v4l2h264dec ! video/x-raw,format=I420 ! "
         "queue leaky=downstream max-size-buffers=1 ! identity name=decoded ! select.sink_0 "
         "videotestsrc is-live=true pattern=black ! "
         f"video/x-raw,format=I420,width={width},height={height},framerate=10/1 ! select.sink_1"
@@ -62,11 +65,19 @@ class ReturnVideo:
 
     def __init__(self, *, port: int, jitter_ms: int, sink: str, width: int = 1280,
                  height: int = 720, on_frame: Callable[[], None], feedback_host: str | None = None,
-                 feedback_port: int = 5003, sender_report_port: int = 5004) -> None:
+                 feedback_port: int = 5003, sender_report_port: int = 5004,
+                 recording: dict | None = None) -> None:
         self.pipeline = Gst.parse_launch(
             pipeline_description(port=port, jitter_ms=jitter_ms, sink=sink, width=width, height=height,
                                  feedback_host=feedback_host, feedback_port=feedback_port,
-                                 sender_report_port=sender_report_port))
+                                 sender_report_port=sender_report_port,
+                                 record_segment_s=recording["segment_s"] if recording else None))
+        self.recorder = None
+        if recording:
+            from rpi.display.recording import ReturnRecorder
+            self.recorder = ReturnRecorder(
+                self.pipeline, self.pipeline.get_by_name("return_tee"), recording["dir"],
+                segment_s=recording["segment_s"], budget_bytes=int(recording["max_total_gb"] * 1e9), gst=Gst)
         self._select = self.pipeline.get_by_name("select")
         self._live_pad = self._select.get_static_pad("sink_0")
         self._fallback_pad = self._select.get_static_pad("sink_1")
@@ -92,6 +103,8 @@ class ReturnVideo:
             raise RuntimeError("return video pipeline failed to start")
 
     def stop(self) -> None:
+        if self.recorder is not None:
+            self.recorder.close()
         self.pipeline.set_state(Gst.State.NULL)
 
     def receiver_stats(self) -> dict[str, int]:

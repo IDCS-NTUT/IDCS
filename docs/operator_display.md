@@ -388,6 +388,21 @@ unchanged, including loopback for the software SIM. This was verified in local
 tests, not by a live socket/firewall audit. The PC task channel remains a
 separate outbound path.
 
+## Return-video recording (2026-10-20)
+
+While the menu's **Operations -> Recording** is on (the Jetson flight
+recorder runs), the Pi also saves the return video it receives to
+`rpi.operator_display.recording.dir` (`/home/idcs/idcs-recordings/video`).
+The encoded stream is tapped before decoding (no re-encode); each recording
+starts at a keyframe and is written as 60 s Matroska segments named
+`<recording start>-<segment>-return.mkv`. Stopping finalises the last segment;
+a segment cut off by power loss remains playable. Oldest files are removed
+first beyond `max_total_gb` (15). The video contains the Jetson's OSD (boxes,
+labels, lock box), not the Pi's own HUD or menu, which are drawn locally. It
+lines up with the flight-recorder data by wall-clock time. The display report
+(`~/.local/state/idcs/operator-display.json`) shows `recording` state and the
+current file. The Pi records even when the PC is absent.
+
 ## Pieces
 
 | Module | Role |

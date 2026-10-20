@@ -556,6 +556,10 @@ Source: `common/config_fields.json`. Maps and `[]` entries describe structure; C
 | `rpi.operator_display` | map | structure | `restart` |
 | `rpi.operator_display.hud_sim_bind` | str | declared type | `restart` |
 | `rpi.operator_display.panel_state_endpoint` | str | declared type | `restart` |
+| `rpi.operator_display.recording` | map | structure | `restart` |
+| `rpi.operator_display.recording.dir` | str | declared type | `restart` |
+| `rpi.operator_display.recording.max_total_gb` | number | finite | `restart` |
+| `rpi.operator_display.recording.segment_s` | int | finite | `restart` |
 | `rpi.operator_display.roi_control_endpoint` | str | declared type | `restart` |
 | `rpi.operator_display.roi_lamp_endpoint` | str | declared type | `restart` |
 | `rpi.operator_display.session_env` | map | structure | `restart` |

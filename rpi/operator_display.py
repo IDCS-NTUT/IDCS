@@ -106,6 +106,17 @@ class DisplayConfig:
                             if v is not None}
         if not self.panel:
             raise ConfigError("rpi.operator_display.panel_state_endpoint is required")
+        # Return-video recording follows the operator agent's Recording switch.
+        raw = display.get("recording")
+        self.recording = None
+        if raw:
+            try:
+                self.recording = dict(dir=str(raw["dir"]), segment_s=int(raw.get("segment_s", 60)),
+                                      max_total_gb=float(raw.get("max_total_gb", 15)))
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ConfigError("rpi.operator_display.recording needs dir, segment_s, max_total_gb") from exc
+            if not 10 <= self.recording["segment_s"] <= 600 or not 1 <= self.recording["max_total_gb"] <= 100:
+                raise ConfigError("rpi.operator_display.recording: segment_s 10..600, max_total_gb 1..100")
 
 
 def _subscriber(ctx: zmq.Context, endpoint: str) -> zmq.Socket | None:
@@ -355,7 +366,8 @@ class OperatorDisplay:
                                  on_frame=lambda: self.status.on_video_frame(time.monotonic()),
                                  feedback_host=config.return_feedback_host,
                                  feedback_port=config.return_feedback_port,
-                                 sender_report_port=config.return_sender_report_port)
+                                 sender_report_port=config.return_sender_report_port,
+                                 recording=config.recording)
         if config.return_frame_identity:
             self.identity_receiver = ReturnIdentityReceiver(config.return_frame_identity,self.video.frame_identity)
         self._drawn_key: object = None
@@ -439,6 +451,9 @@ class OperatorDisplay:
                 self._on_reply(reply, now)
         self.config_menu.tick()
         self.video.show_live(self.status.video.live(now))
+        if self.video.recorder is not None and self.status.agent_state:
+            # Last known agent state: a briefly silent agent does not cut footage.
+            self.video.recorder.set_recording(bool(self.status.agent_state.get("recording")))
         self._draw(now)
         if now >= self._next_log_s:
             self._next_log_s = now + 10.0
@@ -464,6 +479,7 @@ class OperatorDisplay:
                         frame_id=frame.frame_id,source_time_ns=frame.source_time_ns,
                         source_clock_domain=frame.source_clock_domain))
                 report['return_receiver'] = self.video.receiver_stats()
+                report['recording'] = None if self.video.recorder is None else self.video.recorder.report()
                 report['roi'] = dict(enabled=self.roi_tracking,active=self.roi_editor.active,
                     state=self.roi_workflow.state,source_available=self._sim_roi_source_available(now),
                     request_id=self.roi_workflow.request_id)
@@ -824,7 +840,7 @@ def main() -> int:
     for key, value in config.session_env.items():
         os.environ.setdefault(key, value)
     Gst.init(None)
-    missing = missing_elements(config.sink)
+    missing = missing_elements(config.sink, recording=config.recording is not None)
     if missing:
         raise SystemExit(f"missing GStreamer elements: {', '.join(missing)}")
     if args.check:

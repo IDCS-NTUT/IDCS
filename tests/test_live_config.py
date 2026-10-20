@@ -141,6 +141,10 @@ def test_all_21_systemd_stacks_validate_and_keep_base_effective_values():
         # This release adds exactly the dedicated config link, a restart key.
         if "net" in after:
             assert after["net"].pop("zmq_config_link") == "tcp://192.168.0.5:5598"
+        # Pi return-video recording (2026-10-20), a restart-tier addition.
+        display = (after.get("rpi") or {}).get("operator_display") or {}
+        if "recording" in display:
+            assert display.pop("recording")["dir"] == "/home/idcs/idcs-recordings/video"
         # Visual-lock modes are the reviewed source alternatives added after
         # this historical baseline. Existing stacks keep their prior values;
         # only their stop lists gain both mutually exclusive new video owners.

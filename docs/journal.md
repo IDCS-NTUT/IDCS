@@ -293,3 +293,28 @@ State at the hand-over (2026-10-20):
 - Nothing merged. Candidate next step: a bounded DCF-only hold while features
   are too few (strict PSR floor, frame limit, size frozen), since DCF remains
   confident at every loss.
+
+## 2026-10-20 - bounded DCF-only hold (trial, branch `dcf-hold`)
+
+- `IDCS_VPI_DCF_HOLD="<psr floor>,<max frames>"` (default off, fusion only):
+  when a tracking lock hits a feature-starvation reject (insufficient FB
+  features, degenerate geometry, inconsistent motion, insufficient spread),
+  keep it on the DCF position if PSR >= floor, the DCF jump is within the
+  existing disagreement limit and the run is below max frames; size frozen,
+  no template learning, surviving FB points retained so replenishment refills.
+  Any normal accept resets the run; otherwise the normal loss path applies.
+  8 unit tests.
+- Review set vs truth (`IDCS-trials/dcf-hold-20261020`; off reproduces the
+  earlier review): 12,30 and 12,60 identical: seg1159 coverage 0.08 -> 1.00
+  (never lost, error p50 23 -> 8 px), seg1920 82 -> 85, seg2520 141 -> 143,
+  seg5155 22 -> 25, seg6565 unchanged; 20 hold frames in total bridged gaps
+  worth 560 more tracked frames. Fixtures/hands unchanged (occlusion and loss
+  still lost at 57). 10,30 drifts: seg1920 coverage 0.69 with error p50 127 px,
+  p95 310 px while the review's false-tracking count stays 0 (that count does
+  not catch drift; use truth error). 14,30 loses the seg1159 gain (its PSR
+  during starvation was ~13-14). Floor 12 is the only useful value on this
+  set; margin is thin and the gain rests mostly on one clip.
+- Timing: no cost (native p50 8.7 ms all variants; total p50 10.9 ms, p95
+  13.3 -> 12.7 ms with the hold).
+- Not merged; needs more footage (live SIM single drone, real camera) before a
+  default.

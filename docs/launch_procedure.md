@@ -3,7 +3,8 @@
 Use immutable managed releases and their host manifests:
 [deployment](deployment.md), [config stacks](../configs/README.md).
 A Git tag or synchronized development tree is not proof of running source.
-This guide was cross-checked against templates on 2026-10-11, not against live hosts.
+The resident-mode paths below match deploy-111, managed-verified on 2026-10-21.
+Host manifests remain authoritative for installed and active source paths.
 
 **Hardware gate:** no motor/HIL, serial or bridge activation, homing or sweeps
 until the user confirms repaired wiring and every required RS485 motor answers.
@@ -34,28 +35,21 @@ manually starting another source.
 
 - Camera starts local Argus DeepStream, a shadow controller and the corresponding
   PC viewer. Shadow computes/records without publishing physical intents.
-- Deployed110 Single starts the synthetic-observation software mount, whose
-  publisher relays Jetson ROI observations while ROI owns selection. The
-  uncommitted resident-mode candidate instead connects Single directly to
-  Jetson visual perception, as Swarm already does; simulator truth stays scoring
-  evidence. This input change requires managed activation, not repo sync.
+- Single starts a software mount directly consuming Jetson visual perception,
+  as Swarm does; simulator truth stays scoring evidence. Before deploy-111,
+  Single used the simulator's truth/ROI relay instead.
 - Swarm starts the detection-fed software mount; simulator truth is separate
   from visual identities and supplies scoring.
-- Deployed110 normal Camera and both Simulator scenes expose Targets -> Select box /
-  Release / Box size when fresh runtime ROI capability is available. This
-  candidate switches YOLO/ROI inside the same DeepStream source and encoder;
-  selecting or releasing a box requires no source transaction or restart.
-  Release/loss returns the box and resumes YOLO on the next eligible frame;
-  native libraries missing from the release disable ROI while YOLO stays up.
-
-The uncommitted resident-mode candidate replaces those Targets actions with
-**Tracking mode: YOLO / ROI**. In ROI, Select ROI / Release ROI / Box size are
-available; release/loss keeps ROI selected until explicitly choosing YOLO.
-One static video path and asynchronous tracker worker preserve video during
-mode changes and acquisition. Do not assume this menu exists on deploy-110.
+- Normal Camera and both Simulator scenes expose **Targets -> Tracking mode:
+  YOLO / ROI**. In ROI, Select ROI / Release ROI / Box size are available;
+  release/loss keeps ROI selected until explicitly choosing YOLO. One static
+  video path and asynchronous worker preserve video during mode changes and
+  acquisition without a source transaction or service restart. Missing native
+  libraries disable ROI capability while YOLO stays up. Choosing ROI does not
+  itself select a target or grant motion authority.
   The software units add evidence `StateDirectory` roots under
   `/var/lib/idcs/visual-lock/seamless/{camera,sim}`. Review PC/Pi/Jetson V2
-  consumers together and use the new [resident ROI acceptance checklist](visual_lock.md#exact-reviewer-checklist-for-this-candidate-no-motors)
+  consumers together and review [resident ROI acceptance evidence](visual_lock.md#resident-processing-mode-rework-deploy-111-2026-10-21)
   before claiming continuity or unchanged idle performance.
 - Camera / Visual lock replaces DeepStream with the exclusive Argus VPI
   receiver, existing shadow controller and PC viewer. Simulator / Visual lock

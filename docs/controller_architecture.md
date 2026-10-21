@@ -26,15 +26,15 @@ There is no MPC controller or MPC configuration path.
 pixel centre, known-size range/provenance, projected parallax aim point,
 pixel error and signed bearing error. Parallax adjusts the aim reference; it
 does not imply a real laser/effector. No simulated truth is substituted into
-the detection-fed Swarm controller. The resident-mode candidate also connects
-the normal Single SIM controller directly to Jetson V2 via detections.yaml.
-Deployed110 Single instead uses the simulator's existing truth/ROI relay;
+the detection-fed Swarm controller. Deploy-111 also connects the normal Single
+SIM controller directly to Jetson V2 via detections.yaml.
+Earlier deploy-110 Single used the simulator's existing truth/ROI relay;
 its locked ROI path was already visual, not wholly disconnected. Direct
 subscription removes that intermediary and makes both processing modes visual.
 
 ## Feedback, estimator and loss behavior
 
-Resident YOLO/ROI candidate (2026-10-21, not yet deployed): both publish the
+Resident YOLO/ROI (deploy-111,2026-10-21): both publish the
 same unchanged V2 perception schema into this assembler/controller. ROI output
 retains its exact capture identity despite asynchronous completion. Locks use
 distinct visual IDs so controller histories reset on a new target. Unknown

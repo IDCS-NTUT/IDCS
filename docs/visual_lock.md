@@ -4,11 +4,11 @@ Implemented 2026-10-07: NVIDIA **VPI CUDA DCF + Harris + forward/backward PyrLK*
 not DeepStream NvDCF and not OpenCV tracking. No YOLO output is an input.
 OpenCV in the verifier only decodes, renders and annotates pixels.
 
-## Resident processing-mode rework (candidate, 2026-10-21)
+## Resident processing-mode rework (deploy-111, 2026-10-21)
 
-Validated for the approved deploy-111 rollout; activation is not yet recorded.
-Production remains deploy-110 until the managed receipts say otherwise.
-This supersedes the dynamic lease-managed graph below when installed.
+Installed and managed-verified on PC, Jetson and Pi as deploy-111 / d0e9502.
+See deployment.md and host manifests for rollout and live acceptance receipts.
+This supersedes the historical dynamic lease-managed graph below.
 
 - Source (Camera/Simulator) and tracking (YOLO/ROI) are independent. Pi menu:
   Targets -> Tracking mode. ROI shows Select ROI, Release ROI and Box size.
@@ -67,11 +67,17 @@ consumed verified visual observations; first20/last20 Auto-tick median error
 85.94ms shows a transient queue backlog; this is not negligible-latency or
 endurance acceptance. All production software was restored afterwards. Detailed
 metrics, safety checks, test-only fixtures and restoration correction are in
-the newest journal receipt; release activation still requires approval.
+the newest journal receipt. Physical panel/motor acceptance remains deferred.
 
-### Deployed110 lease-managed implementation (historical candidate basis)
+## Historical deploy-109/110 dynamic ROI (not deploy-111)
 
-## Resident ROI in Camera / Simulator
+The following dynamic-graph design, old Select box menu and automatic YOLO
+return describe earlier releases, not the resident mode above. In particular,
+`tools.check_seamless_roi` asserts the legacy release-to-detector contract; do
+not use it unchanged to qualify deploy-111's explicit ROI/YOLO mode. Current
+deployed menu/source receipts and bounded moving software-control evidence are
+in the newest journal and deployment.md. The older checklists remain evidence
+for their named implementations, not permission to replace managed services.
 
 Normal `jetson.deepstream.runtime` defaults `deepstream.seamless_roi: true`
 since deploy-109. With it enabled,

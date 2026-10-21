@@ -1682,3 +1682,60 @@ HIL target are inactive. No trial unit remains active.
   legacy lifecycle, observation and PID-core tests, in addition to existing
   UI/operator/deployment checks. Validate all hosts before activating Pi -> PC
   -> Jetson; preserve rollback plans and never start inactive physical services.
+
+## 2026-10-21 - deploy-111 committed, deployed and software acceptance passed
+
+- Committed resident YOLO/ROI rework as d0e95029bc29ffbe239339a41ee9d7ae41a8af01,
+  tag deploy-111, with Codex author/committer/trailer. Incremental Git bundle
+  transferred to PC shared IDCS repository and clean detached IDCS-wt-deploy111;
+  immutable IDCS-releases/deploy-111 staged on PC/Jetson/Pi. No user branch reset,
+  useful-source deletion, GitHub push or physical-motion authorization inferred.
+- Native asset safeguard initially refused tracker.cpp byte mismatch. Independent
+  diff --strip-trailing-cr across the complete native directory found no source
+  differences: Windows trial archive was CRLF, Git release LF. External rollout
+  helper now compares normalized line endings, not arbitrary whitespace/code.
+  Validated snapshot07 binaries copied unchanged: main VPI SHA256
+  c0b7c0c8e5e68e13f79644c2bca77658f428ea7618518f62eff1ce3917c7e023;
+  additive pool/CUDA helper SHA256
+  8f59203925a21edcdf8fa96d2cc8b2cd0141c371077e14927c985a3857a84138.
+  Model/parser links retain their existing bytes. Asset receipts preserved.
+- Managed plans: zero YAML differences. Reviewed unit change is Single SIM's
+  direct visual V2 input; no physical tuning changes. Managed validation passed
+  PC592/6 optional skips/8 subtests, Jetson623, Pi88 unittest cases. Existing
+  resident/native candidate evidence remains in resident-final-evidence-02.
+  Activated Pi -> PC -> Jetson with rollback backups, then managed verification
+  and audit passed all roles. No unmanaged overrides or automatic restarts.
+- Deployed real Pi menu/input-path canary (menu-roi-e2e-20261021-15) passed
+  three YOLO -> ROI -> YOLO cycles. Harness replaces only the scenario and
+  private panel/control/lamp endpoints; no production module/receiver overrides,
+  no physical GPIO publication, no motor APIs, no additional GPU/video owner.
+  Sole display guard restores installed display in finally; GPIO PID126878
+  unchanged during trial. Camera229302 and shadow229317 unchanged, same
+  source session4a82d20b622f4313a250b420e436786d. Return YOLO29.976fps,
+  ROI29.974fps, maximum decoded gap57.95ms, receiver rebuilds0; lost/late RTP0,
+  one jitter-buffer latency drop. Idle ROI correctly has no invented selection;
+  explicit YOLO restores detector ownership. This is switching/video acceptance,
+  not a new camera texture lock, physical panel or photon-latency measurement.
+  Raw harness acknowledgement wait times start after joystick pulse completion,
+  so they must not be represented as full command-to-applied latency.
+- Ordinary software source acceptance passed Camera -> Simulator/Single ->
+  Camera via real operator/mode agents. Pi display127141/NRestarts0 unchanged
+  across source changes; receiver-only rebuilds0 ->1 ->2 handled sender changes.
+  SIM YOLO and idle ROI30.30fps; same perception231935/session
+  c861a790899c4a648fe18d110438c9d9 throughout processing-mode changes, with
+  no added receiver rebuild. Returned Camera29.68fps. Both source transactions
+  succeeded; normal camera target/shadow restored, no trial units/overrides left.
+- Current Camera/YOLO is software/shadow only; physical controller, bridge,
+  serial and HIL target remain inactive. Bounded native moving-texture tracking
+  and actual PC software-control evidence from snapshot05 still applies to the
+  committed implementation: no claim of hardware tuning, real-drone quality,
+  negligible worker delay or endurance acceptance. The actual camera's previous
+  dark zero-corner seed refusal remains a scene prerequisite, not concealed.
+- Receipts/scripts on PC: deployments/seamless-roi-fix-20261021/deploy111-*,
+  including deploy111-menu-acceptance/report.json and
+  deploy111-source-acceptance/report.json. Managed host receipts and authoritative
+  current manifests under deployments/managed. Local copies retained outside
+  repo in idcs-dev/seamless-roi-evidence-20261021. Documentation receipt updates
+  current launch/menu/controller/config-stack guidance; legacy dynamic graph and
+  check_seamless_roi's release-to-detector contract explicitly marked historical.
+  Documentation-only follow-up does not move the deployed code tag.

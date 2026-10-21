@@ -4,22 +4,47 @@ This document replaces source-path claims in historical handovers. A release
 being present, a Git tag being fetched, and a process actually using it are
 different states. Repository synchronization is separate from deployment.
 
-## Approved rollout in preparation (2026-10-21, deploy-111)
+## Last recorded deployment (2026-10-21, deploy-111)
 
-User approved commit and software-only deployment of the resident YOLO/ROI
-mode switch. Activation/verification receipts are not yet recorded; deploy-110
-remains installed until the managed rollout succeeds. The release adds a fixed
+User-approved code commit `d0e9502` / tag `deploy-111` is installed on PC,
+Jetson and Pi from `~/Desktop/project/IDCS-releases/deploy-111`.
+The release adds a fixed
 video path, asynchronous VPI worker, reusable CUDA/NVMM image pool, expanded
 sideband receiver limit and explicit Pi tracking-mode menu. Single SIM consumes
 Jetson visual V2 directly instead of the existing truth/ROI relay. No YAML or
 physical-controller settings change. The main VPI library is unchanged; the
 surface helper adds pool copy/CUDA-view functions and must be deployed together.
 
-Bounded candidate validation and exact artifacts are in the newest journal.
-All previous releases/trials/evidence remain available for rollback. Physical
-motor/HIL services stay inactive throughout this software rollout.
+Managed validation: PC592 passed/6 optional skips (8 subtests), Jetson623 passed,
+Pi88 unittest cases passed. Activation Pi -> PC -> Jetson, followed by managed
+verification and reference audit on every host. No YAML differences, unmanaged
+overrides or automatic service restarts. Asset validation found only CRLF/LF
+differences between the Windows trial archive and Git native sources; an
+independent normalized diff matched, and recorded binary digests were retained.
 
-## Last recorded deployment (2026-10-21, deploy-110)
+Deployed Pi menu acceptance used private simulated panel inputs through the real
+joystick/menu/receiver paths, never physical GPIO or motion endpoints. Three
+YOLO -> ROI -> YOLO cycles retained one camera session and unchanged Jetson
+processes. Return YOLO29.976fps / ROI29.974fps; maximum decoded gap57.95ms;
+no receiver rebuilds, zero lost/late RTP packets, one jitter-buffer latency drop.
+This test exercises idle ROI mode, not a new textured-camera acquisition claim.
+Earlier native and moving software-control acceptance remains scoped as recorded
+in the journal (including nonzero worker latency and the dark-camera refusal).
+
+Ordinary Camera -> Simulator/Single -> Camera acceptance also passed. Pi display
+PID127141/NRestarts0 survived; source changes rebuilt only its receiver twice.
+SIM YOLO/ROI returned30.30fps and retained perception PID231935/session;
+Camera restored29.68fps. Processing-mode changes did not rebuild the receiver
+or restart services. Current source is Camera/YOLO, shadow controller only.
+
+Authoritative manifests: `deployments/managed/{pc,jetson,pi}-current.json`;
+release receipts: `deployments/managed/deploy-111/<role>/`. Live reports/scripts:
+`deployments/seamless-roi-fix-20261021/deploy111-{menu,source}-acceptance/`
+and the adjacent `deploy111-*` logs. All paths are under `~/Desktop/project`.
+All previous releases/trials/evidence remain available for rollback. Physical
+motor/HIL services stayed inactive. No GitHub push or hardware acceptance.
+
+## Earlier deployment (2026-10-21, deploy-110)
 
 Code commit `a79a9b9` / tag `deploy-110` is installed on PC, Jetson and Pi from
 `~/Desktop/project/IDCS-releases/deploy-110`. It removes restart-based ROI source

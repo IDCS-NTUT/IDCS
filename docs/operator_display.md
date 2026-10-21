@@ -5,8 +5,8 @@ paths. Dated trial/release deployment paragraphs below are historical, not
 instructions to reinstall old sources. Consolidation preserves panel policies;
 real switch/motor acceptance remains deferred.
 
-Resident-mode rework (uncommitted candidate,2026-10-21; deploy-110 remains
-installed): **Targets -> Tracking mode: YOLO / ROI**, independent of Camera /
+Resident-mode rework (deployed in deploy-111,2026-10-21):
+**Targets -> Tracking mode: YOLO / ROI**, independent of Camera /
 Simulator. ROI exposes **Select ROI / Release ROI / Box size**. Closing the
 editor, release or loss does not change mode. Only choosing YOLO returns to
 detection/planning. Source/encoder/services do not restart. Missing readiness
@@ -16,7 +16,7 @@ Selection requires Manual, readable OFF then ON and the exact displayed source
 frame. Resident mode retains an explicit lock after Manual OFF and follows only
 through the ordinary auto gate; Auto cannot seed/edit. Manual retains steering
 when not editing; editing captures the stick without mount motion. E-stop,
-unreadable-input, freshness and lease guards remain. This candidate is not
+unreadable-input, freshness and lease guards remain. This release is not
 physical switch/motor acceptance. See newest journal entries.
 
 Shared UI styling, rendering ownership and controlled preview/benchmark checks:
@@ -39,15 +39,15 @@ the operator changes from the menu (target lock, target type, mode,
 recording) is a request to the Jetson's operator agent, which owns that
 authority.
 
-Uncommitted native-return recovery candidate (2026-10-15): the Pi and PC use
+Native-return recovery (introduced in deploy-98): the Pi and PC use
 GStreamer's loss notification and complete-access-unit keyframe gating, with
 RTCP feedback to the Jetson. After damage, video may briefly pause until a valid
 keyframe rather than display a corrupt prediction chain. Existing freshness,
 LOW VIDEO FPS and exact-frame ROI checks remain active; recovery does not
 authorize motion or reseed a tracker. Default ports are RTP5002, feedback5003
 on Jetson, sender reports5004 on receivers. See [visual_lock.md](visual_lock.md)
-for candidate status, configurable ports and all-IDR fallback. This is not a
-claim that managed services have been upgraded or camera ROI is available.
+for configurable ports and all-IDR fallback. Recovery is not a guarantee of
+zero loss or a qualification of physical camera control.
 
 ### Pi receiver recovery (deployed in deploy-110)
 

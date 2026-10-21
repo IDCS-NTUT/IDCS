@@ -64,7 +64,7 @@ Standard stacks (`--config configs/base --config-extra ...`):
 | controller, HIL (Jetson) | `bench/uncoupled.yaml,controller/hil.yaml,bench/tuned.yaml` |
 | HIL streamer (PC) | `sim/v2_scene.yaml,sim/mode_hil.yaml` |
 | sim streamer (PC) | `sim/v2_scene.yaml,sim/target_fast.yaml,sim/mode_simulated_mount.yaml` |
-| sim controller (PC) | `sim/v2_scene.yaml,controller/sim_mount.yaml,bench/tuned.yaml` |
+| sim controller (PC) | `sim/v2_scene.yaml,controller/sim_mount.yaml,bench/tuned.yaml,controller/detections.yaml` |
 | swarm streamer (PC) | `sim/v2_scene.yaml,sim/target_fast.yaml,sim/mode_simulated_mount.yaml,sim/swarm.yaml` |
 | swarm controller (PC) | `sim/v2_scene.yaml,controller/sim_mount.yaml,bench/tuned.yaml,controller/detections.yaml` |
 | camera controller, shadow (Jetson) | `bench/uncoupled.yaml,bench/tuned.yaml,controller/local_camera.yaml` |

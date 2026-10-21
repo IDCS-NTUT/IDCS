@@ -76,6 +76,9 @@ def run(argv=None):
                                 or message.get("roi_capable") is not True):
                             raise RuntimeError("normal Simulator ROI capability required")
                         status = (message, now)
+                        if (selecting is not None and request is None
+                                and message.get("terminal_selection_id") == selecting.selection_id):
+                            raise RuntimeError(f"ROI lease ended before seed: {message.get('reason')}")
                         if (request is not None and release_s is None
                                 and message.get("terminal_request_id") == request.request_id):
                             raise RuntimeError(f"ROI ended before release: {message.get('reason')}")
@@ -107,12 +110,14 @@ def run(argv=None):
                 source, source_s = status
                 if selecting is None and source.get("source_ready") is True:
                     selecting = VisualRoiSelect(str(uuid.uuid4()), source["tracker_session"], True)
+                    report["selection"] = selecting.as_message()
                 if selecting is not None and now-select_sent_s >= .1:
                     push.send_json(selecting.as_message())
                     select_sent_s = now
                 current, seen_s = latest_frame if latest_frame is not None else ({}, 0.)
                 if (now-source_s <= .25 and now-seen_s <= .1 and source.get("source_ready") is True
                         and source.get("roi_cache_enabled") is True and source.get("roi_cache_frames", 0) >= 3
+                        and selecting is not None and source.get("roi_selection_id") == selecting.selection_id
                         and current.get("tracker_session") == source.get("tracker_session")):
                     x, y, w, h = args.box
                     request = VisualRoiSeed.from_mapping(dict(type="visual_roi_seed_v1",

@@ -12,8 +12,9 @@ Targets -> Select box / Release / Box size works in Camera and both
 Simulator scenes when fresh runtime V2 reports `roi_state.capable`. Selecting
 a box changes selection ownership inside the current process; it does not
 change mode, source, encoder, RTP session or service. The two managed VPI-only
-modes below remain available as fallback. This candidate has **software-only
-verification**, not Jetson/Pi acceptance or a deployment receipt.
+modes below remain available as fallback. This candidate has scoped Jetson
+round-7 lab checks recorded in
+`docs/journal.md`; it is not a deployment receipt or Pi/hardware acceptance.
 
 Idle uses exactly the off graph and ordinary metadata probe placement:
 `RoiPipeline.__init__` installs no ROI frame, event or packet probes and creates
@@ -145,6 +146,22 @@ GStreamer bus/source failures retain their normal fatal behavior. These graph ch
 GStreamer's documented [blocking IDLE probes](https://gstreamer.freedesktop.org/documentation/additional/design/probes.html).
 CUDA input, DCF hold **12,30**, overlay queue and trial defaults are unchanged.
 
+Metadata-probe faults permit two recoveries per runtime. Capability is restored
+only after complete native retirement and ordinary graph restoration; the third
+fault disables ROI with an explicit reason. Cleanup, native, graph and transport
+faults retain their disabled state because their resources may be uncertain.
+Live/native/shadow observations and stitched aliases produce unique track IDs;
+the snapshot builder also deduplicates repeated IDs before strict V2 validation.
+
+An unseeded editor skips frames without verified source identity, counting
+`selecting_identity_misses`, and waits for an exact frame within its original
+lease deadline. It makes no cache copy for those frames. Pending/locked requests
+still end on unavailable identity. During a seed/lock barrier, `source_queue`
+temporarily retains up to 16 real decoded frames / 400 ms, without leaking,
+so cold native initialization does not discard the immediate catch-up frames.
+The original queue settings return on release, loss, fault or graph retirement.
+No source frame is fabricated and the 150 ms tracker gap gate is unchanged.
+
 Owned exits store their request/selection/reason before clearing authority and
 queue a terminal result plus a source-status snapshot. Status sequence numbers
 are assigned again at publication to preserve wire order with periodic status.
@@ -158,6 +175,12 @@ status includes `roi_window_generation`, `roi_window_retiring` and
 `roi_selection_id`; obsolete actions count as `roi_counts.stale_window_events`.
 Timer-only command processing does not increment `yolo_frames`/`yolo_skipped`;
 those counters now describe router admissions.
+Admission/refusal statuses additionally retain `lease_selection_id`,
+`lease_accepted`, `lease_reason` and `lease_window_generation` through queued
+status refresh. Unseeded cancellation publishes its own terminal snapshot too.
+Logs name each admitted/refused/ended lease and generation; heartbeat renewals
+do not add log lines. The check helper waits for its own selection ID before
+seeding, and reports an explicit pre-seed lease termination.
 An early empty ROI return also cancels with a reason. Ordinary/orphan metadata
 cannot publish detector ownership while silently retaining a native lock: an
 inconsistent per-buffer route ends ROI with `frame routing ownership unavailable`.

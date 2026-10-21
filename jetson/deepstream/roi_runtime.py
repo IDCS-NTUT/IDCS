@@ -65,6 +65,8 @@ class RoiRuntime:
         self.acquiring = None
         self.current_frame_id = None
         self.terminal = {"request_id": None, "reason": None, "generation": 0}
+        self.lease_result = dict(lease_selection_id=None, lease_accepted=None,
+                                 lease_reason=None, lease_window_generation=0)
         self._reset = False
         self._overflow = False
         self.barrier_requested = threading.Event()
@@ -99,6 +101,7 @@ class RoiRuntime:
         self.sequence = 0
         self.sequence_lock = threading.Lock()
         self.error = None
+        self.recovery_pending = False
         self.owner_ident = None
         self.native_owner = None
         self.native_ident = None
@@ -156,6 +159,12 @@ class RoiRuntime:
         self.generation += 1
         self.retirement_requested = False
         self.draining.clear()
+        if self.recovery_pending:
+            self.recovery_pending = False
+            self.error = None
+            self.capable = self.borrower is not None
+            self.counts["metadata_recoveries"] += 1
+            print(f"[deepstream.roi] metadata recovery complete generation={self.generation}", flush=True)
 
     def stop_native_owner(self):
         if self.native_owner is not None:
@@ -163,7 +172,15 @@ class RoiRuntime:
             self.native_owner = None
             self.native_ident = None
 
-    def fault(self, reason):
+    def fault(self, reason, *, recoverable=False):
+        if recoverable:
+            self.counts["metadata_faults"] += 1
+        # Retry only after a complete graph/native retirement. Destructor and
+        # graph/transport faults remain disabled: their resources are uncertain.
+        self.recovery_pending = (recoverable and self.counts["metadata_faults"] < 3
+                                 and (self.capable or self.recovery_pending))
+        if recoverable and self.counts["metadata_faults"] >= 3:
+            reason = f"{reason}; ROI disabled after 3 metadata faults"
         self.error = reason
         self.terminal = dict(self.terminal, reason=reason)
         self.capable = False
@@ -248,6 +265,7 @@ class RoiRuntime:
 
     def _cancel(self, reason, *, allow_reselect=False):
         request = self.active or self.acquiring or (self.pending[0] if self.pending else None)
+        ended = request is not None or self.selecting is not None
         if self.managed_window and (request is not None or self.selecting is not None):
             # Close admission at cancellation, before GLib notices an empty
             # window. Later controls remain ordered/coalesced for its successor.
@@ -257,6 +275,8 @@ class RoiRuntime:
         if request is not None or self.selecting is not None:
             self.terminal = dict(request_id=None if request is None else request.request_id,
                                  selection_id=self.selecting, reason=reason, generation=self.generation)
+            print(f"[deepstream.roi] lease ended id={self.selecting} generation={self.generation} "
+                  f"request={None if request is None else request.request_id} reason={reason}", flush=True)
         if request is not None:
             self._notify(request, False, reason)
         self.active = self.pending = None
@@ -265,7 +285,7 @@ class RoiRuntime:
             self.expired_selection = None if allow_reselect else self.selecting
         self.selecting = None
         self._reset = True
-        if request is not None:
+        if ended:
             self._publish_terminal()
 
     def _publish_terminal(self):
@@ -275,9 +295,14 @@ class RoiRuntime:
             self.counts["messages_dropped"] += 1
 
     def _refuse_select(self, request, reason):
+        self.counts["leases_refused"] += 1
+        self.lease_result = dict(lease_selection_id=request.selection_id, lease_accepted=False,
+                                 lease_reason=reason, lease_window_generation=self.generation)
         self.terminal = dict(request_id=None, selection_id=request.selection_id,
                              reason=reason, generation=self.generation)
         self._publish_terminal()
+        print(f"[deepstream.roi] lease refused id={request.selection_id} "
+              f"generation={self.generation} reason={reason}", flush=True)
 
     @on_native_owner
     def begin_frame(self, *, allow_seed=True, count_frame=True):
@@ -327,10 +352,19 @@ class RoiRuntime:
                     if self.selecting == request.selection_id:
                         self._cancel("operator cancelled ROI lease")
                 elif self.capable and request.selection_id != self.expired_selection:
+                    admitted = self.selecting != request.selection_id
                     if self.selecting != request.selection_id:
                         self.selecting = request.selection_id
                         self.selection_started_s = received_s
+                        self.counts["leases_admitted"] += 1
+                        self.lease_result = dict(lease_selection_id=request.selection_id,
+                            lease_accepted=True, lease_reason="ROI lease admitted",
+                            lease_window_generation=self.generation)
+                        print(f"[deepstream.roi] lease admitted id={request.selection_id} "
+                              f"generation={self.generation} age_ms={(self.clock()-received_s)*1000:.1f}", flush=True)
                     self.selection_seen_s = received_s
+                    if admitted:
+                        self._publish_terminal()
                 elif request.enabled:
                     self._refuse_select(request,
                         self.error or "ROI lease retired; open Select box again")
@@ -391,6 +425,7 @@ class RoiRuntime:
                 logs=summary, terminal=self.terminal, counts=self.counts)) + "\n", encoding="utf-8"))
         self.logs, self.output = {}, None
         if errors:
+            self.recovery_pending = False
             self.error = "ROI cleanup fault: " + "; ".join(errors)
             self.capable = False
             self.terminal = dict(self.terminal, reason=self.error)
@@ -486,6 +521,12 @@ class RoiRuntime:
             if not self.capable:
                 return None
             expected_domain = "jetson_monotonic" if self.source == "camera" else "pc_monotonic"
+            if frame is None and not self.owns_selection:
+                # Graph attachment can expose an ordinary in-flight frame whose
+                # source header is unavailable. It grants no cache/seed authority,
+                # but must not tombstone a new editor before its first exact frame.
+                self.counts["selecting_identity_misses"] += 1
+                return None
             if (frame is None or not frame.source_identity_verified
                     or frame.tracker_session != self.tracker_session
                     or frame.source_clock_domain != expected_domain
@@ -619,6 +660,7 @@ class RoiRuntime:
             terminal_request_id=terminal["request_id"], reason=terminal["reason"],
             terminal_selection_id=terminal.get("selection_id"),
             terminal_window_generation=terminal.get("generation", self.generation),
+            **self.lease_result,
             **self.status())
 
     @on_native_owner

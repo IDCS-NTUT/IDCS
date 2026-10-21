@@ -65,7 +65,8 @@ def test_helper_waits_for_peer_and_cancels_on_every_exit(tmp_path, monkeypatch, 
             capable = not (failure == "after_select" and peer.select is not None)
             peer.pending = [dict(type="visual_roi_status_v1", source_mode="sim", managed_mode="sim",
                 roi_capable=capable, source_ready=True, tracker_session="session", roi_cache_enabled=True,
-                roi_cache_frames=3), dict(rtp_ssrc=1, tracker_session="session", frame_id=10,
+                roi_cache_frames=3, roi_selection_id=None if peer.select is None else peer.select["selection_id"]),
+                dict(rtp_ssrc=1, tracker_session="session", frame_id=10,
                 source_time_ns=1_000_000, source_clock_domain="pc_monotonic")]
             if peer.request is not None and not peer.result_sent:
                 peer.result_sent = True

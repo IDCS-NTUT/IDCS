@@ -37,6 +37,7 @@ from jetson.deepstream.argus_sensor_meta import ArgusSensorMetaReader, SensorFra
 from jetson.deepstream.async_target_selection import AsyncDeepStreamTargetSelector
 from jetson.deepstream.metadata_adapter import (
     FrameTiming, MissedFrameCounter, ObjectObservationV2, object_meta_to_observation_v2,
+    unique_track_observations,
     TrackIdStitcher, perception_snapshot_from_metadata, pts_ns_to_ms,
 )
 from jetson.deepstream.snapshot_transport import SnapshotTransport
@@ -420,7 +421,7 @@ def _pipeline_description(
             # join on the camera pad is unaffected.
             + (f"nvvideoconvert name=camera_flip flip-method={argus_flip_method} ! "
                "video/x-raw(memory:NVMM),format=NV12 ! " if argus_flip_method else "")
-            + "queue max-size-buffers=2 leaky=downstream ! mux.sink_0 "
+            + "queue name=source_queue max-size-buffers=2 leaky=downstream ! mux.sink_0 "
         )
         mux = (
             f"nvstreammux name=mux batch-size=1 width={argus_width} height={argus_height} "
@@ -432,7 +433,7 @@ def _pipeline_description(
             "caps=application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000 ! "
             "rtpjitterbuffer name=rtp_jitter latency=50 drop-on-latency=true ! rtph264depay ! h264parse ! "
             "nvv4l2decoder name=decoder enable-max-performance=1 ! "
-            "queue max-size-buffers=2 leaky=downstream ! mux.sink_0 "
+            "queue name=source_queue max-size-buffers=2 leaky=downstream ! mux.sink_0 "
         )
         mux = "nvstreammux name=mux batch-size=1 width=1280 height=720 live-source=true batched-push-timeout=16666 ! "
     else:
@@ -444,7 +445,7 @@ def _pipeline_description(
             # prevent the hardware decoder from producing any output for the replay.
             "demux.video_0 ! queue max-size-buffers=2 ! h264parse ! "
             f"nvv4l2decoder name=decoder enable-max-performance=1 ! {pace}"
-            "queue max-size-buffers=2 ! mux.sink_0 "
+            "queue name=source_queue max-size-buffers=2 ! mux.sink_0 "
         )
         mux = "nvstreammux name=mux batch-size=1 width=1280 height=720 live-source=false batched-push-timeout=16666 ! "
     tracker_element = ""
@@ -612,7 +613,7 @@ def _shadow_observations(pyds: Any, batch_meta: Any, frame_meta: Any,
                         class_id=str(int(target.classId)), confidence=min(max(float(entry.confidence), 0.0), 1.0),
                         track_id=int(target.uniqueId), detector_matched=False,
                     ))
-    return found
+    return unique_track_observations(found)
 
 
 def _detector_probe(pad: Any, info: Any, user_data: tuple[Any, "VerificationStats"]):
@@ -1397,7 +1398,7 @@ def run(argv: Sequence[str] | None = None, *, initial_bundle=None) -> int:
     if args.seamless_roi:
         metadata_id = src_pad.add_probe(Gst.PadProbeType.BUFFER, _metadata_probe, metadata_data)
         def roi_fail(reason):
-            print(f"[deepstream.runtime] {reason}; ROI disabled, YOLO remains available", flush=True)
+            print(f"[deepstream.runtime] {reason}; ROI workflow ended, YOLO remains available", flush=True)
         try:
             from jetson.deepstream.roi_runtime import RoiRuntime
             from jetson.deepstream.roi_pipeline import RoiPipeline

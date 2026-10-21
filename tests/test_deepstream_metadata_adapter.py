@@ -443,6 +443,35 @@ def test_stitcher_does_not_reuse_ids_lost_long_ago():
     assert o.track_id == 4
 
 
+def test_snapshot_deduplicates_live_shadow_and_stitcher_output():
+    from dataclasses import replace
+    from unittest.mock import Mock
+    timing = FrameTiming(frame_id=1, src_ts_ms=1, rx_ts_ms=2, infer_ts_ms=3,
+                         img_w=1280, img_h=720)
+    live = [_object(left=100, top=100, width=50, height=50, object_id=7,
+                    confidence=confidence) for confidence in (.3, .9, .6)]
+    shadow = [_obs(7, .5, .5, matched=False), _obs(8, .4, .4, matched=False),
+              replace(_obs(8, .6, .6, matched=False), confidence=.95)]
+    snapshot = perception_snapshot_from_metadata(timing, live, shadow_tracks=shadow)
+    assert [(o.track_id, o.confidence) for o in snapshot.tracks] == [(7, .9), (8, .95)]
+    assert snapshot.tracks[0].box.x == 100/1280
+    stitcher = Mock()
+    stitcher.apply.return_value = [_obs(4, .2, .2), _obs(4, .8, .8)]
+    assert len(perception_snapshot_from_metadata(timing, live, stitcher=stitcher).tracks) == 1
+
+
+def test_stitched_aliases_diverging_after_bypass_never_duplicate_a_public_id():
+    from jetson.deepstream.metadata_adapter import TrackIdStitcher
+    stitcher = TrackIdStitcher()
+    stitcher.apply([_obs(3, .3, .3, matched=False), _obs(8, .301, .3)], img_w=1280, img_h=720)
+    # Two native aliases return at very different locations after YOLO resumes.
+    # The old fallback assigned native 3 twice when native 8 claimed stable 3.
+    out = stitcher.apply([_obs(8, .31, .3), _obs(3, .8, .8, matched=False)], img_w=1280, img_h=720)
+    assert sorted(o.track_id for o in out) == [3, 8]
+    out = stitcher.apply([_obs(8, .32, .3), _obs(8, .9, .9)], img_w=1280, img_h=720)
+    assert len(out) == 1 and out[0].track_id == 8
+
+
 def test_return_rate_gate_halves_a_60fps_stream_by_arrival_time():
     from jetson.deepstream.pipeline import ReturnRateGate
 

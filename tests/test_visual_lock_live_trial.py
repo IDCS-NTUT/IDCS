@@ -83,6 +83,8 @@ def test_panel_roi_snapshots_are_isolated_from_ordinary_controller():
 def test_trial_guard_names_both_jetson_video_service_variants():
     assert "idcs-deepstream-camera.service" in JETSON_SOFTWARE_UNITS
     assert "idcs-deepstream-video.service" in JETSON_SOFTWARE_UNITS
+    assert "idcs-visual-lock-camera.service" in JETSON_SOFTWARE_UNITS
+    assert "idcs-visual-lock-sim.service" in JETSON_SOFTWARE_UNITS
 
 
 def test_pi_guard_checks_display_owner_without_stopping_gpio_owner(tmp_path):

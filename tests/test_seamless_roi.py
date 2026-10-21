@@ -430,7 +430,8 @@ def test_roi_faults_restore_idle_graph_and_do_not_end_video(
     assert set(elements) == baseline and wire.metadata_pad.peer is elements["osd_rgba_convert"].pads["sink"]
     assert not wire.probes and not wire.blocks and roi.native_owner is None
     assert not roi.owns_selection and not roi.cache._frames
-    assert not roi.capable and roi.source_status()["reason"]
+    assert roi.capable == (fault == "metadata")
+    assert roi.source_status()["reason"]
     count = normal.call_count
     for _ in range(60):
         wire.metadata_pad.dispatch(wire.gst.PadProbeType.BUFFER, NS(get_buffer=lambda: Mock(pts=100)))
@@ -472,6 +473,79 @@ def test_unseeded_fault_does_not_republish_previous_lock_request(pipeline_wire, 
     assert status["terminal_request_id"] is None
     assert status["terminal_selection_id"] == next_lease.selection_id
     assert status["reason"] == "new unseeded workflow fault"
+    wire.close()
+
+
+def test_metadata_fault_recovers_after_retirement_and_disables_after_three(
+        pipeline_wire, adapter, monkeypatch):
+    from jetson.deepstream import pipeline as module
+    wire, _, normal = pipeline_wire
+    roi, _, _, _ = adapter
+    for attempt in range(3):
+        lease = start_wire(wire)
+        request, _ = lock(adapter)
+        with monkeypatch.context() as patch:
+            patch.setattr(module, "_metadata_probe", Mock(side_effect=ValueError("bad metadata")))
+            wire.metadata_probe(None, NS(get_buffer=lambda: Mock(pts=1)), None)
+        assert not roi.capable and roi.abort_reason
+        successor = VisualRoiSelect(str(uuid.uuid4()), roi.tracker_session, True)
+        wire.receive(successor.as_message())
+        stop_wire(wire)
+        assert roi.capable == (attempt < 2)
+        assert roi.counts["metadata_recoveries"] == min(attempt+1, 2)
+        assert roi.terminal["selection_id"] == lease.selection_id
+        assert not roi.cache._frames and roi.native_owner is None
+        # Admission after the complete retirement is either explicit refusal
+        # with this ID, or a fresh cache window that actually tracks.
+        wire.lifecycle()
+        if attempt < 2:
+            wire.lifecycle()
+            assert roi.selecting == successor.selection_id
+            fresh, _ = lock(adapter)
+            roi.process(image_frame(2), object())
+            assert roi.process(image_frame(3), object()).snapshot.selection is not None
+            wire.receive(VisualRoiRelease(fresh.request_id, fresh.tracker_session).as_message())
+            roi.service()
+            stop_wire(wire)
+        else:
+            assert roi.source_status()["terminal_selection_id"] == successor.selection_id
+            assert "disabled after 3" in roi.error
+    wire.close()
+
+
+def test_unseeded_missing_header_waits_for_exact_frame_and_publishes_cancel(pipeline_wire, adapter):
+    wire, _, _ = pipeline_wire
+    roi, borrower, _, _ = adapter
+    lease = start_wire(wire)
+    roi.process(None, object())
+    assert roi.selecting == lease.selection_id and not roi.retirement_requested
+    borrower.clone.assert_not_called()
+    roi.process(image_frame(), object())
+    assert roi.cache._frames
+    wire.receive(VisualRoiSelect(lease.selection_id, lease.tracker_session, False).as_message())
+    roi.service()
+    assert any(m.get("terminal_selection_id") == lease.selection_id
+               for m in roi.messages.queue if m["type"] == "visual_roi_status_v1")
+    stop_wire(wire)
+    wire.close()
+
+
+def test_source_retention_is_bounded_and_restored_after_retirement(pipeline_wire, adapter):
+    wire, elements, _ = pipeline_wire
+    settings = {"leaky": 2, "max-size-buffers": 2, "max-size-bytes": 10485760,
+                "max-size-time": 1_000_000_000}
+    original = dict(settings)
+    queue = NS(get_property=settings.__getitem__, set_property=settings.__setitem__)
+    elements["source_queue"] = queue
+    start_wire(wire)
+    wire.retain_source_frames(True)
+    assert settings == {"leaky": 0, "max-size-buffers": 16, "max-size-bytes": 0,
+                        "max-size-time": 400_000_000}
+    wire.retain_source_frames(True)
+    assert wire.roi.counts["source_retention_windows"] == 1
+    wire.roi.abort("test abandonment")
+    stop_wire(wire)
+    assert settings == original and wire.source_queue_settings is None
     wire.close()
 
 
@@ -683,7 +757,7 @@ def test_new_lease_before_glib_draining_waits_for_complete_retirement(
     wire, _, _ = pipeline_wire
     roi, _, _, clock = adapter
     lease = start_wire(wire)
-    if ending == "release":
+    if ending in ("release", "missing_frame"):
         request, _ = lock(adapter)
     else:
         roi.process(image_frame(), object())
@@ -1442,7 +1516,7 @@ def test_router_really_bypasses_both_gpu_elements(adapter):
     pipeline = wire.pipeline
     buffer = Mock(pts=1)
     assert wire.route(None, NS(get_buffer=lambda: buffer), None) == "drop"
-    pipeline.get_by_name.assert_called_once_with("roi_owner")
+    assert [call.args[0] for call in pipeline.get_by_name.call_args_list] == ["source_queue", "roi_owner"]
     pipeline.get_by_name.return_value.get_static_pad.return_value.chain.assert_called_once_with(buffer)
     assert not wire.done.is_set()
     wire.selector.pause_for_roi.assert_called_once()
@@ -1452,7 +1526,7 @@ def test_router_really_bypasses_both_gpu_elements(adapter):
     roi.enqueue(VisualRoiRelease(roi.active.request_id, roi.active.tracker_session).as_message())
     pipeline.reset_mock()
     assert wire.route(None, NS(get_buffer=lambda: buffer), None) == "ok"
-    pipeline.get_by_name.assert_not_called()
+    assert all(call.args[0] == "source_queue" for call in pipeline.get_by_name.call_args_list)
     wire.selector.resume_from_roi.assert_called_once()
     roi.close()
 

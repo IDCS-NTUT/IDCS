@@ -41,6 +41,7 @@ class RoiPipeline:
         self.barrier_timeout_s = 2.0
         self.metadata_skipped = False
         self.selector_paused = False
+        self.source_queue_settings = None
         self.cache_expiry_sent = False
         self.closed = threading.Event()
         self.stopping = False
@@ -124,8 +125,8 @@ class RoiPipeline:
         self.transition = "starting"
         self.block(self.metadata_pad)
 
-    def fault(self, reason):
-        self.roi.fault(reason)
+    def fault(self, reason, *, recoverable=False):
+        self.roi.fault(reason, recoverable=recoverable)
         self.fail(reason)
 
     def activate(self):
@@ -256,6 +257,7 @@ class RoiPipeline:
                 if owner.get_static_pad(pad_name).set_active(False) is False:
                     raise RuntimeError(f"ROI queue {pad_name} deactivation failed")
         self.roi.stop_native_owner()
+        self.retain_source_frames(False)
         sink = self.pipeline.get_by_name("osd_rgba_convert").get_static_pad("sink")
         peer = self.metadata_pad.get_peer()
         if peer is not None and peer != sink:
@@ -358,6 +360,7 @@ class RoiPipeline:
         needs_barrier = (self.roi.barrier_requested.is_set() or self.roi.owns_selection
                          or self.barrier_engaged) and self.roi.abort_reason is None
         if needs_barrier:
+            self.retain_source_frames(True)
             self.roi.counts["barrier_waits"] += 1
             if not self.done.wait(self.barrier_timeout_s):
                 self.roi.counts["barrier_timeouts"] += 1
@@ -374,6 +377,8 @@ class RoiPipeline:
         skipped = (self.roi.begin_frame(allow_seed=needs_barrier)
                    if self.transition in (None, "starting") else False)
         self.roi.yolo_skipped = skipped
+        if not skipped:
+            self.retain_source_frames(False)
         self.barrier_engaged = skipped
         with self.frames_lock:
             self.frames[int(buffer.pts)] = (time.perf_counter_ns() if skipped else None, skipped)
@@ -415,6 +420,27 @@ class RoiPipeline:
             return self.gst.PadProbeReturn.DROP
         return self.gst.PadProbeReturn.OK
 
+    def retain_source_frames(self, enabled):
+        # A cold native seed can take >150 ms. Keep bounded real decoded frames
+        # through that pause instead of making the leaky two-frame source queue
+        # manufacture a gap immediately after successful exact acquisition.
+        if enabled == (getattr(self, "source_queue_settings", None) is not None):
+            return
+        queue = self.pipeline.get_by_name("source_queue")
+        if queue is None:
+            return
+        if enabled and getattr(self, "source_queue_settings", None) is None:
+            self.source_queue_settings = {key: queue.get_property(key) for key in (
+                "max-size-buffers", "max-size-bytes", "max-size-time", "leaky")}
+            for key, value in (("max-size-buffers", 16), ("max-size-bytes", 0),
+                               ("max-size-time", 400_000_000), ("leaky", 0)):
+                queue.set_property(key, value)
+            self.roi.counts["source_retention_windows"] += 1
+        elif not enabled and getattr(self, "source_queue_settings", None) is not None:
+            for key, value in self.source_queue_settings.items():
+                queue.set_property(key, value)
+            self.source_queue_settings = None
+
     def metadata_probe(self, pad, info, data):
         from jetson.deepstream.pipeline import _metadata_probe
         buffer = info.get_buffer()
@@ -431,7 +457,7 @@ class RoiPipeline:
                 self.roi.process(None, buffer)
             return _metadata_probe(pad, info, data)
         except Exception as exc:
-            self.fault(f"ROI metadata fault: {exc}")
+            self.fault(f"ROI metadata fault: {exc}", recoverable=True)
             return self.gst.PadProbeReturn.OK
         finally:
             if started is not None:
@@ -583,6 +609,9 @@ class RoiPipeline:
                             terminal = {key: message[key] for key in (
                                 "terminal_request_id", "terminal_selection_id",
                                 "terminal_window_generation", "reason")}
+                            terminal.update({key: message[key] for key in (
+                                "lease_selection_id", "lease_accepted", "lease_reason",
+                                "lease_window_generation") if key in message})
                             message = dict(current, **terminal)
                         self.pub.send_json(message, flags=zmq.NOBLOCK)
                 except zmq.ZMQError:

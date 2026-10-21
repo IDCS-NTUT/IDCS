@@ -16,6 +16,7 @@ import time
 JETSON_SOFTWARE_UNITS = (
     "idcs-operator-agent.service", "idcs-controller-camera.service",
     "idcs-deepstream-camera.service", "idcs-deepstream-video.service",
+    "idcs-visual-lock-camera.service", "idcs-visual-lock-sim.service",
 )
 
 

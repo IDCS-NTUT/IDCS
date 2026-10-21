@@ -896,3 +896,204 @@ State at the hand-over (2026-10-20):
   video and unchanged PID/session/SSRC. Verify fresh selection after recovery.
   Actual Jetson timing, NVMM/CUDA lifetime, dynamic Gst recovery and Pi behavior
   remain reviewer gates; no hardware actuation is needed or authorized.
+
+## 2026-10-21 - Seamless ROI round 7: Jetson lease and resume acceptance
+
+- Base `8e2953cf21108b0bfdf1ed990cbd2b4eb58721f8` (`lab/seamless-roi-v6`),
+  branch `codex/seamless-roi-lab`. Default `deepstream.seamless_roi` stays
+  **false**. Check-only configuration digest stays
+  `c6d47d1b39a47c47fd4d5300adaf2a81c3da192d9ff23c841a903712760a9de2`.
+  This is a software/Jetson lifecycle qualification; no motor, serial, bridge,
+  RS485, HIL, homing, step or sweep command, deployment, installed-unit/config
+  edit, push, tag or PR. No Pi actuation or physical wiring qualification.
+- `metadata_adapter.py` deduplicates native live objects and shadows by ID,
+  preferring detector support then confidence, and protects the strict V2
+  builder against duplicate stitcher output. The stitcher claims canonical
+  identities before aliases, permits genuinely separated native hypotheses to
+  split again, and never emits an already claimed fallback ID. The shadow
+  metadata reader also deduplicates at its source. This fixes the resume-frame
+  collision without suppressing two separated targets.
+- `roi_runtime.py` skips unavailable source identities during **unseeded**
+  selection, without copying pixels or resetting its original deadline.
+  Pending/tracking requests still fail closed on unavailable identity. This
+  removes the observed new-lease retirement on an ordinary frame during graph
+  attachment. Admission/refusal/exit now logs the selection ID and generation.
+  Status retains `lease_selection_id`, `lease_accepted`, `lease_reason` and
+  `lease_window_generation` through publication-time graph refresh; unseeded
+  exits immediately publish their own terminal status. Renewals stay coalesced
+  and unlogged. `check_seamless_roi` waits for its own selection ID before
+  seeding, records its lease, and surfaces a pre-seed termination directly.
+- A metadata-probe exception ends the current workflow and withdraws capability
+  until its native owner, queue and ordinary graph have completely retired.
+  Two recoveries are allowed; the third metadata fault disables ROI with a
+  reason. Destructor/native/graph/transport faults remain disabled when resource
+  safety is uncertain. Tests exercise subsequent real fake-backend acquisition,
+  full retirement, third-fault refusal and all existing generation/owner gates.
+- Cold VPI acquisition initially took about 134-138 ms and the ordinary leaky
+  two-frame decoded queue discarded enough following frames to trip the
+  unchanged 150 ms source-gap gate. During a seed/lock barrier only,
+  `roi_pipeline.py` retains up to **16 decoded frames / 400 ms**, non-leaky,
+  through the existing source queue; its original settings return on release,
+  loss, fault or retirement. Both off/on idle graph descriptions remain equal;
+  no idle frame/packet callback or native owner was added. GPU input counters
+  confirm neither primary nor tracker receives locked frames. No synthetic
+  timestamp, automatic reseed, truth feedback or relaxed tracker gate.
+
+### Hosts, preparation and preserved commands
+
+- Git for Windows SSH (`C:/Program Files/Git/usr/bin/ssh.exe -n -o BatchMode=yes`)
+  reached `idcs@140.124.39.68`; Jetson used nested
+  `ssh -n -i ~/.ssh/id_ed25519_lan -o BatchMode=yes idcs@192.168.0.5`.
+  Nontrivial operations were copied scripts, run by absolute path. Owners were
+  checked before the build and every runtime with
+  `systemctl list-units 'idcs-*' --state=active --no-pager`; initial Camera,
+  shadow camera controller, operator and read-only recorder were active;
+  physical/HIL owners were inactive. The managed manifest identified deploy-105.
+- New folder on **both PC and Jetson**:
+  `/home/idcs/Desktop/project/IDCS-trials/seamless-roi-lab-20261021/` (`T` below),
+  with archive-copied branch source in `T/src`; modified files arrived as a
+  separate tar overlay. No release/runtime checkout was edited. Linked engines:
+  YOLO -> `/home/idcs/idcs-models/yolo/yolo26s_dataset2_e100_736_grey1280x720.engine`;
+  swarm -> `/home/idcs/Desktop/project/IDCS-runtime/assets/models/swarm/swarm_policy.engine`;
+  parser -> `deployments/native-assets/48eaa5e916ee4835d3998cc63dab8f3b7e3801891b3f80c56df7a20cb81f7ee3/libnvdsinfer_yolo26_parser.so`.
+  These are resolved deploy-105 link targets, used read-only.
+- Jetson build, from `T/src`:
+  `cmake -S jetson/visual_lock/native -B build/visual-lock -DCMAKE_BUILD_TYPE=Release -DIDCS_BUILD_LIVE_SURFACE=ON -DIDCS_BUILD_TEST_SURFACE=OFF`
+  then `cmake --build build/visual-lock -j4` -> **pass**, ABI4 main/live-surface
+  libraries. `native-provenance.json` records all model/parser/library SHA256s.
+- Source switches used the supplied kit's `set_mode.py` with the operator agent
+  on 5590: original **Camera -> sim_visual_lock -> Camera**. No manual streamer
+  or source-mode unit switching. `run_visual_lock_trial_guard.py` now also names
+  the two managed visual-lock receiver units as software owners, so it can pause
+  and restore the fallback selected by this authorized operator mode.
+- Each video run used `T/sim.sh NAME DURATION` / `T/ab.sh`, a fresh
+  `idcs-seamless-lab-NAME` transient unit, `RuntimeMaxSec=DURATION+120` (A/B 200),
+  `TimeoutStopSec=40`, `KillMode=mixed`, UID/GID idcs, working directory `T/src`,
+  `PYTHONPATH=T/src`, `PYTHONUNBUFFERED=1`, `XDG_RUNTIME_DIR=/run/user/1000`, and
+  `bin/python3 -m tools.run_visual_lock_trial_guard --host jetson --output O/guard -- bin/python3 -m jetson.deepstream.runtime --config configs/base --config-extra T/seamless-on.yaml --duration-s DURATION --report O/report.json --health-file O/health.json`.
+  The overlay only sets `deepstream.seamless_roi: true`. Camera A/B adds
+  `configs/controller/local_camera.yaml`, omitting the ROI overlay for off.
+  One receiver and one command helper at a time; no installed unit activation
+  beyond the guard's scoped restoration and authorized operator mode switch.
+- Exploratory transient runs `diagnostic-1/2/3` (240/240/120 s bounds),
+  `acceptance-1/2` (350/140 s), then final `final-1/2` (**110 s each**) are all
+  retained. Diagnostic-1/2 and acceptance-1 were ended early by SIGTERM to their
+  own guard unit; their runtimes exited **0**. Every other runtime also exited
+  **0**. Reports/logs document the early failures, not just successful cases:
+  `diag1/diag4` cold source-gap losses, `diag2` success, `diag3` pre-seed identity
+  loss, then `diag5/diag6` success after retention. `probe-matrix` ran after its
+  short receiver had ended and timed out waiting for readiness; it seeded
+  nothing. The first very-early `matrix-run2` lock lost to an actual source gap
+  after 19 selected frames; its complete steady-source retry passed 15/15.
+  Both later **final** runtimes passed their first and every subsequent lock.
+  Startup/transient source gaps still terminate tracking; no gap gate was hidden.
+- Guard restore attempts for managed `idcs-visual-lock-sim.service` returned a
+  start-job error on some intermediate runs; the operator agent restored and
+  the receiver was observed running between trials. These statuses and service
+  journal are retained. Final Camera restoration was explicitly verified through
+  the operator agent. The trial copy's linked swarm engine lacked its adjacent
+  hash-bound normalization metadata, so runtime logged planner fallback. That
+  does not feed the VPI tracker and is not learned-policy qualification.
+- Session evidence generated by the kit's default ROI evidence root remains in
+  `/var/lib/idcs/visual-lock/seamless/sim/` (about **14 MB** total, below its
+  4 GB rotation budget). Own-trial sessions are additionally **copied**, never
+  moved/deleted, to `T/native-session-evidence.tar.gz`. No recording, model,
+  old trial, rollback source or deployment file was removed.
+
+### Final Jetson acceptance numbers
+
+The PC's task-local `acceptance.py` is one persistent test operator. It uses
+truth only to choose each explicit seed box for that exact displayed source
+frame/time; it supplies no ongoing tracker input. It records every status,
+lease, seed and release, verifies unique published track IDs and stable GPU
+input counters while locked, and waits the specified release-to-next-lease gap.
+Commands used `PYTHONPATH=T/src venv/bin/python T/acceptance.py --output T/matrix-final1`
+and `... --output T/matrix-final2`. Each seed runs 3 s before explicit release.
+
+| Runtime | Gap | Tracked and detector returned | Selected frames per lock | Actual four gaps (s) |
+| --- | --- | --- | --- | --- |
+| final-1 | 0.5 s | **5/5** | 143, 152, 143, 146, 149 | .5073, .5050, .5016, .5065 |
+| final-1 | 1.5 s | **5/5** | 155, 151, 154, 144, 148 | 1.5038, 1.5097, 1.5026, 1.5002 |
+| final-1 | 3 s | **5/5** | 153, 148, 152, 145, 148 | 3.0097, 3.0095, 3.0055, 3.0038 |
+| final-2 | 0.5 s | **5/5** | 139, 149, 148, 147, 147 | .5081, .5054, .5051, .5005 |
+| final-2 | 1.5 s | **5/5** | 150, 145, 148, 155, 141 | 1.5050, 1.5007, 1.5065, 1.5061 |
+| final-2 | 3 s | **5/5** | 140, 146, 150, 149, 146 | 3.0050, 3.0069, 3.0005, 3.0029 |
+
+- Final runtimes: **6,271 / 6,251 frames**, **15 admissions, 15 activations and
+  15 retirements each**, generations end at 15; **zero faults/roi_error**, empty
+  cache, no probes or owner at exit; **return code 0 / 0**. VPI updates
+  **2,231 / 2,200**; seed steps **45 / 46**. This does not claim sustained 60 Hz
+  while locked: whole-run steady rates were **58.174 / 58.034 fps**.
+- `PYTHONPATH=T/src bin/python3 T/probe.py` on Jetson, bounded with `timeout 30`:
+  **3/3** fresh unseeded leases admitted and caches reached **16 frames each**.
+  First cache-enabled status arrived after **4.249 / 1.600 / 5.906 ms**;
+  100 ms renewal, 4 s selection, cancel, 2 s gap. Evidence `lease-probe.json`.
+- PC `T/abandon.py` SIGKILLs its helper during selecting and during tracking:
+  helper exits **-9 / -9**, each lease ends with **ROI lease expired**, full
+  graph/cache cleanup after **0.807 / 1.508 s** from observed helper death.
+  Subsequent fresh locks pass with **150 / 145 selected frames** and detector
+  return. Evidence `abandon-*-result.json`, `after-abandon-*` and status JSONL.
+- PC `acceptance.py --blank --count 1 --gaps .5 --output T/blank-run1`:
+  **refused**, `seed: seed lacks texture`, **0 selected frames**, detector
+  returned, next fresh locks above succeed. No runtime `roi_error`.
+- Camera idle A/B: four exclusive **60 s** windows, off/on/off/on, with 15 s
+  restoration gaps. Final table and comparison are recorded below.
+
+| Window | Frames | Steady fps | Infer+metadata p50 / p95 (ms) | Decode-to-input p50 / p95 (ms) |
+| --- | --- | --- | --- | --- |
+| off-1 | 3,541 | 60.189 | 11.559 / 13.298 | 2.552 / 3.600 |
+| on-1 | 3,542 | 60.195 | 11.646 / 13.356 | 2.226 / 3.649 |
+| off-2 | 3,540 | 60.172 | 11.582 / 13.326 | 2.659 / 3.642 |
+| on-2 | 3,535 | 60.200 | 11.645 / 13.333 | 2.276 / 3.643 |
+
+On-minus-off p50: **+0.087 / +0.063 ms**, both below **0.2 ms**.
+Both on windows have empty ROI counters, no cache/probes/owner, capability
+true and `roi_error: null`; all four runtime exits are **0**.
+The installed receiver preflight rejects a restore while the trial command
+wrapper still lists its child module. Camera restore start-jobs returned **1**
+while shadow-controller/operator restores returned **0**; the same symptom
+appeared on the managed SIM fallback. After all wrappers exited, an explicit
+operator-agent Camera switch succeeded, followed by stable status verification.
+Final operator status is **camera**, not busy, motors not live; Camera video,
+shadow controller and operator are active. Bridge, serial, motor controller and
+HIL target are inactive. No trial unit remains active.
+
+
+### Tests, provenance and limits
+
+- Final Windows full suite:
+  `python -m pytest -q --capture=sys --continue-on-collection-errors --tb=short tests`
+  -> **1,537 passed, 58 skipped, 9 failed, 8 collection errors**, 20 subtests,
+  **179.32 s**. Untouched-base comparison of the same 14 known failing modules
+  (round-6 list above) -> **65 passed, 6 skipped, 9 failed, 8 errors**, **4.19 s**.
+  Failure/error names match **exactly**: two Windows path-casing assertions,
+  five Pillow failures, missing trimesh, missing historical gimbal-fit report,
+  four gi and four Pillow collection errors. Unavailable dependencies are not
+  counted as passes. An earlier full run exposed a separated-alias regression
+  and an over-specific test call-count assertion; both were fixed before this
+  final full run and final native matrices.
+- Focused Windows command (round-6 nine modules plus
+  `tests/test_visual_lock_live_trial.py tests/test_roi_seed_review.py`) ->
+  **417 passed, 2 skipped**, **41.52 s** before the final canonical-alias fix;
+  the final full suite covers that fix. Final smaller boundary run including
+  `tests/test_deepstream_accepted_osd.py` -> **214 passed, 2 skipped**, **5.04 s**.
+  Windows skips are missing PyGObject/gi for the real queue/videorate checks.
+- Jetson task-local `jetson_tests.py`, bounded with `timeout 90`, runs
+  `bin/python3 -m pytest -q tests/test_deepstream_metadata_adapter.py tests/test_seamless_roi.py tests/test_deepstream_accepted_osd.py --tb=short`
+  equivalently through `pytest.main`: **184 passed**, **8.37 s**, including the
+  real non-GPU GStreamer queue insert/remove/reopen test. The first plain
+  absolute-path invocation hit the host's unrelated installed `tests` package
+  during collection; the task-local runner scopes repository fixture imports
+  without installing packages or changing system config.
+- Check-only runtime/default-off config, helper `--help`, changed-module
+  compileall and `git diff --check` pass. All lab commands and outputs are in
+  the local task evidence's `actions.log`; PC/Jetson `*-evidence.tar.gz` preserve
+  the scripts, health, reports, guard statuses, runtime logs and status traces.
+  Windows evidence is preserved under `artifacts/seamless-roi-lab-20261021/`
+  (including base archive/tree and suite logs). Remote task directories remain.
+  `code-hashes.json` confirms all six runtime/helper modules exactly match the
+  Jetson-tested bytes. `guard-restore-cause.txt` records the installed preflight's
+  explicit false owners (sudo/systemd-run/guard wrappers listing the child).
+- These checks qualify the scoped software ROI workflow and idle cost, not
+  detector accuracy, controller tuning, cross-host transit latency, physical
+  interlocks, Pi controls or hardware. Hardware hold remains in force.

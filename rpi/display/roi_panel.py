@@ -38,11 +38,11 @@ class RoiPanelWorkflow:
         self.previous_on = None
         return action
 
-    def update(self, panel: Mapping, *, available: bool) -> RoiAction | None:
+    def update(self, panel: Mapping, *, available: bool, allow_auto: bool = False) -> RoiAction | None:
         if not self.active:
             return None
         unsafe = (not available or panel.get("emergency") is not False
-                  or panel.get("manual_active") is not True)
+                  or panel.get("manual_active") is not True and not allow_auto)
         valid = (panel.get("inputs_valid") or {}).get("fire_control") is True
         physical_on = (panel.get("inputs") or {}).get("fire_control")
         if unsafe or not valid or type(physical_on) is not bool:
@@ -52,6 +52,16 @@ class RoiPanelWorkflow:
             self.saw_readable_off = False
             self.previous_on = None
             return "release" if release else None
+
+        if allow_auto and panel.get('manual_active') is not True:
+            # Leaving Manual may follow an already explicit lock through the
+            # normal auto gate. It must never create a seed or move an editor.
+            if self.state in ('pending','tracking') and physical_on:
+                return None
+            release=self.request_id is not None
+            self.state='camera';self.request_id=None
+            self.saw_readable_off=False;self.previous_on=None
+            return 'release' if release else None
 
         # PanelState.control_cmd_enabled is deliberately suppressed while ROI
         # is open. Use the separately sampled physical contact for the edge.

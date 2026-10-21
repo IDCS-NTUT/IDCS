@@ -110,6 +110,8 @@ def solve_snapshot_aiming(
         distance_m, distance_source = _resolve_parallax_range(
             snapshot, track.track_id, frame_control
         )
+        if track.class_id == 'visual' and distance_source in ('configured_default','configured_infinite'):
+            distance_m = distance_source = None
         if distance_m is not None:
             try:
                 projected = laser_ray_to_pixel(

@@ -9,6 +9,7 @@ import threading
 import time
 
 import zmq
+from common.visual_roi_seed import ROI_SIDEBAND_MAX_BYTES
 
 
 class ReturnIdentityReceiver:
@@ -30,7 +31,7 @@ class ReturnIdentityReceiver:
         try:
             socket.setsockopt(zmq.LINGER,0)
             socket.setsockopt(zmq.RCVHWM,128)
-            socket.setsockopt(zmq.MAXMSGSIZE,1024)
+            socket.setsockopt(zmq.MAXMSGSIZE,ROI_SIDEBAND_MAX_BYTES)
             socket.setsockopt(zmq.SUBSCRIBE,b'')
             socket.connect(self.endpoint)
             self.ready.set()

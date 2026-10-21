@@ -215,6 +215,15 @@ class RoiPipeline:
             if self.block_ready.is_set():
                 self.deactivate()
         elif not self.active:
+            if self.roi.retirement_requested:
+                # A select+cancel can be consumed in one timer turn, before
+                # start()/activate() installed any graph or native owner.
+                # No streaming teardown can acknowledge that empty window.
+                # Retire its seeds/tombstone before admitting the successor.
+                if self.owner is not None or self.roi.native_owner is not None:
+                    raise RuntimeError("inactive ROI retirement still has an owner")
+                self.roi.retire(generation=self.roi.generation)
+                self.roi.finish_window()
             if not self.roi.commands.empty():
                 self.roi.begin_frame(allow_seed=False, count_frame=False)
             if self.roi.cache_enabled:
@@ -243,8 +252,13 @@ class RoiPipeline:
         for name, pad_name, _ in list(self.probes):
             self.detach(name, pad_name)
         owner = self.owner
-        # Stop the task while its pads remain blocked/linked. Deactivation
-        # flushes pad waits; nothing can wake and push into an unlinked tail.
+        # Both upstream pads are idle/blocked. Isolate the inlet BEFORE NULL:
+        # queue pad deactivation must not propagate FLUSHING to the live
+        # upstream task. Keep its outlet linked until the task has stopped so
+        # it cannot push into an unlinked return-video tail.
+        inlet=owner.get_static_pad('sink')
+        peer=inlet.get_peer()
+        if peer is not None:peer.unlink(inlet)
         try:
             if owner.set_state(self.gst.State.NULL) == self.gst.StateChangeReturn.FAILURE:
                 raise RuntimeError("ROI owner queue stop failed")

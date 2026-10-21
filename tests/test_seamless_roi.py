@@ -227,6 +227,45 @@ def stop_wire(wire):
     pytest.fail(f"lifecycle did not detach: {wire.transition}")
 
 
+def test_legacy_queue_inlet_is_isolated_before_null_without_unlinking_return_tail(pipeline_wire,adapter):
+    wire,elements,_=pipeline_wire
+    _,_,_,clock=adapter
+    start_wire(wire)
+    owner=wire.owner
+    states=[]
+    def stop(state):
+        states.append(state)
+        assert owner.pads['sink'].peer is None
+        assert owner.pads['src'].peer is elements['osd_rgba_convert'].pads['sink']
+        return 'success'
+    owner.set_state=stop
+    clock.t+=.6
+    stop_wire(wire)
+    assert states==[wire.gst.State.NULL]
+    assert wire.metadata_pad.peer is elements['osd_rgba_convert'].pads['sink']
+    wire.close()
+
+
+@pytest.mark.parametrize('ending', ('cancel', 'supersede'))
+def test_never_activated_window_can_retire_and_admit_successor(pipeline_wire, adapter, ending):
+    wire, _, _ = pipeline_wire
+    roi, _, _, _ = adapter
+    old = VisualRoiSelect(str(uuid.uuid4()), roi.tracker_session, True)
+    new = VisualRoiSelect(str(uuid.uuid4()), roi.tracker_session, True)
+    wire.receive(old.as_message())
+    assert roi.selecting == old.selection_id and not wire.active
+    if ending == 'cancel':
+        wire.receive(VisualRoiSelect(old.selection_id, old.tracker_session, False).as_message())
+    wire.receive(new.as_message())
+    assert roi.retirement_requested and wire.owner is None
+    generation = roi.generation
+    for _ in range(4): wire.lifecycle()
+    assert roi.generation == generation+1
+    assert wire.active and roi.selecting == new.selection_id and not roi.retirement_requested
+    wire.close()
+    wire.fail.assert_not_called()
+
+
 def settle_owner(wire):
     for job in (wire.service_job, getattr(wire, "owner_job", None)):
         if job is not None:
@@ -1339,7 +1378,7 @@ def test_close_during_graph_transition_unblocks_pads_and_closes_owner(pipeline_w
 
 @pytest.mark.parametrize("tracker", ("none", "nvdcf"))
 @pytest.mark.parametrize("source", ("camera", "rtp"))
-def test_enabled_idle_pipeline_description_is_identical_to_off(tmp_path, tracker, source):
+def test_enabled_pipeline_has_one_permanent_video_queue(tmp_path, tracker, source):
     from jetson.deepstream.pipeline import _pipeline_description
     kwargs = dict(input_file=None, live_argus=source == "camera",
         rtp_input_port=5000 if source == "rtp" else None,
@@ -1347,7 +1386,10 @@ def test_enabled_idle_pipeline_description_is_identical_to_off(tmp_path, tracker
         argus_fps=60, nvinfer_config=tmp_path/"infer.txt", paced=False, tracker=tracker,
         gpu_osd=True, return_h264=True, return_udp_host="127.0.0.1", return_udp_port=5002,
         return_h264_file=None)
-    assert _pipeline_description(**kwargs, seamless_roi=True) == _pipeline_description(**kwargs, seamless_roi=False)
+    enabled = _pipeline_description(**kwargs, seamless_roi=True)
+    off = _pipeline_description(**kwargs, seamless_roi=False)
+    queue = '! queue name=roi_owner max-size-buffers=2 max-size-bytes=0 max-size-time=0 '
+    assert enabled.count(queue)==1 and enabled.replace(queue,'')==off
 
 
 def test_gstreamer_live_queue_insert_remove_and_reopen_without_gpu(adapter, monkeypatch):
@@ -1392,7 +1434,21 @@ def test_gstreamer_live_queue_insert_remove_and_reopen_without_gpu(adapter, monk
         while not predicate() and time.monotonic() < deadline:
             wire.poll()
             time.sleep(.005)
-        assert predicate(), wire.transition
+        if not predicate():
+            pads={}
+            for name in ('mux','primary','tracker','osd','return_wire'):
+                element=pipeline.get_by_name(name)
+                for side in ('src','sink'):
+                    pad=element.get_static_pad(side)
+                    if pad is not None:
+                        pads[name+'.'+side]=(str(pad.get_task_state()),str(pad.get_last_flow_return()),
+                            pad.is_active(),pad.is_blocked(),pad.is_blocking())
+            messages=[]
+            bus=pipeline.get_bus()
+            while (message:=bus.pop_filtered(Gst.MessageType.ERROR|Gst.MessageType.WARNING|Gst.MessageType.EOS)):
+                messages.append(str(message.parse_error()) if message.type==Gst.MessageType.ERROR else
+                    str(message.parse_warning()) if message.type==Gst.MessageType.WARNING else 'EOS')
+            pytest.fail(str(dict(transition=wire.transition,pads=pads,messages=messages)))
     try:
         assert pipeline.set_state(Gst.State.PLAYING) != Gst.StateChangeReturn.FAILURE
         until(lambda: len(frames) >= 3)

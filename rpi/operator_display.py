@@ -48,7 +48,7 @@ from rpi.display.video import ReturnVideo, missing_elements  # noqa: E402
 from rpi.display.return_identity import ReturnIdentityReceiver  # noqa: E402
 from common.hud_geometry import resolve_hud_fov  # noqa: E402
 from common.hud_telemetry import MAX_BYTES  # noqa: E402
-from common.visual_roi_seed import VisualRoiSeed, VisualRoiRelease, VisualRoiSelect  # noqa: E402
+from common.visual_roi_seed import VisualRoiSeed, VisualRoiRelease, VisualRoiSelect, VisualRoiMode  # noqa: E402
 from common.return_frame_identity import RoiSourceLease  # noqa: E402
 from rpi.display.hud import PanelHudState, PiHudRenderer  # noqa: E402
 
@@ -155,7 +155,8 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
                roi_available: Callable[[], bool] = lambda: False,
                roi_release: Callable[[], None] = lambda: None,
                video_recovery: Callable[[], dict] = lambda: {},
-               video_retry: Callable[[], None] = lambda: None) -> Menu:
+               video_retry: Callable[[], None] = lambda: None,
+               processing_mode: Callable[[str], None] = lambda mode: None) -> Menu:
     version = _version()
 
     def visual_mode() -> bool:
@@ -189,6 +190,18 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
         return items
 
     def target_items() -> list[Page | Action | Choice]:
+        current = status.agent_state.get('processing_mode')
+        if current in ('yolo','roi') and status.agent_state.get('mode') in ('camera','sim'):
+            switch = Action('Tracking mode',lambda:processing_mode('yolo' if current=='roi' else 'roi'),
+                            value='ROI' if current=='roi' else 'YOLO')
+            if current=='roi':
+                return [switch,Action('Select ROI',roi_preview),Action('Release ROI',roi_release),
+                        Choice('Box size','roi_box_size')]
+            return [switch,Action('Planner selection',
+                lambda:send(OperatorCommand('selection_mode',mode='operator' if
+                    status.agent_state.get('selection_mode')!='operator' else 'planner')),
+                value='off' if status.agent_state.get('selection_mode')=='operator' else 'on'),
+                Page('Eligible classes',items=class_items)]
         if visual_mode() or visual_roi_trial:
             return [Action('Select box',roi_preview), Action('Release',roi_release),
                     Choice('Box size','roi_box_size')]
@@ -332,7 +345,8 @@ class OperatorDisplay:
                                self._hud_details, self._start_roi_preview, visual_roi_trial,
                                lambda: self._sim_roi_source_available(time.monotonic()), self._menu_release_roi,
                                video_recovery=lambda: self.video.recovery_status(),
-                               video_retry=lambda: self.video.retry_receiver())
+                               video_retry=lambda: self.video.retry_receiver(),
+                               processing_mode=self._set_processing_mode)
         self.config_menu = ConfigMenu(self._send_config,
             lambda: fire_control_enabled(self.status, time.monotonic()))
         self.menu.config_menu = self.config_menu
@@ -365,6 +379,8 @@ class OperatorDisplay:
         self._roi_select = None
         self._roi_select_sent_s = 0.0
         self._roi_open_cache = False
+        self._processing_pending = None
+        self._processing_status = {}
         if config.visual_roi_seed and config.roi_lamp_endpoint and config.roi_control_endpoint:
             self.roi_control_pub = self.ctx.socket(zmq.PUB)
             self.roi_control_pub.setsockopt(zmq.LINGER, 0)
@@ -401,12 +417,38 @@ class OperatorDisplay:
         return (self.visual_roi_trial or state.get('mode') in ('camera_visual_lock','sim_visual_lock')
                 or state.get('mode') in ('camera','sim') and state.get('roi_capable') is True)
 
+    def _set_processing_mode(self, mode: str) -> None:
+        now=time.monotonic()
+        if self._processing_pending is not None:
+            self.status.show_notice('Tracking-mode change pending',now)
+            return
+        status=self._processing_status
+        if (self.roi_seed is None or not self.roi_source.live_session(now,status.get('tracker_session'))
+                or status.get('managed_mode') not in ('camera','sim')):
+            self.status.show_notice('Tracking mode unavailable: ROI status missing/stale',now)
+            return
+        if mode=='roi' and (status.get('roi_capable') is not True or not self.status.panel.live(now)
+                or self.status.panel_state.get('emergency') is not False):
+            self.status.show_notice('ROI unavailable: capability, panel or E-stop gate',now)
+            return
+        if self.roi_workflow.active:
+            self._release_roi()
+            self.roi_workflow.close()
+            self.roi_editor.active=False
+        command=VisualRoiMode(str(uuid.uuid4()),status['tracker_session'],mode,status['mode_revision'])
+        try:self.roi_seed.send_json(command.as_message(),flags=zmq.NOBLOCK)
+        except zmq.Again:
+            self.status.show_notice('Tracking-mode transport unavailable',now)
+            return
+        self._processing_pending=(command.command_id,now)
+        self.status.show_notice('Switching tracking to '+mode.upper(),now)
+
     def _roi_terminal(self, request_id: str, reason: str | None, now: float) -> None:
         if self.roi_workflow.result(request_id,False):
             self._cancel_roi_select()
             self._pending_roi_request = None
             self._roi_request_session = None
-            self.status.show_notice(f'ROI ended: {reason or "lost"}; GPIO12 OFF selects again',now)
+            self.status.show_notice(f'ROI ended: {reason or "lost"}; fire-control OFF selects again',now)
 
     def _roi_sim_lease(self, now: float) -> dict:
         panel = self.status.panel_state
@@ -463,7 +505,7 @@ class OperatorDisplay:
     def _menu_release_roi(self) -> None:
         request = self.roi_workflow.disarm()
         self._release_roi(request)
-        self.status.show_notice('ROI released; GPIO12 OFF selects again',time.monotonic())
+        self.status.show_notice('ROI released; fire-control OFF selects again',time.monotonic())
 
     def _video_lost(self, reason: str) -> None:
         """Receiver faults withdraw ROI immediately, independently of its lease."""
@@ -483,6 +525,9 @@ class OperatorDisplay:
         now = time.monotonic()
         self.video.service(now)
         self._read_messages(now)
+        if self._processing_pending is not None and now-self._processing_pending[1] > 2.0:
+            self._processing_pending=None
+            self.status.show_notice('Tracking-mode acknowledgement timed out; check current mode',now)
         if self.roi_workflow.active and not self.visual_roi_trial and (not self.roi_tracking or not self._sim_roi_source_available(now)):
             request = self.roi_workflow.request_id
             self.roi_workflow.close()
@@ -498,7 +543,9 @@ class OperatorDisplay:
                          and panel.get('emergency') is False)
             try:
                 self.roi_lamp_pub.send_json(dict(type='roi_lamp_v1', available=bool(available),
-                                                 roi_active=bool(self.roi_editor.active)),
+                                                 roi_active=bool(self.roi_editor.active),
+                                                 resident_control=bool(self._processing_status.get('processing_mode')=='roi'
+                                                     and self._sim_roi_source_available(now))),
                                             flags=zmq.NOBLOCK)
             except zmq.Again:
                 pass
@@ -576,6 +623,11 @@ class OperatorDisplay:
                     continue
                 try:
                     if identity.get('type') == 'visual_roi_status_v1':
+                        self._processing_status=identity
+                        if (self._processing_pending is not None
+                                and identity.get('mode_command_id')==self._processing_pending[0]):
+                            self._processing_pending=None
+                            self.status.show_notice(identity.get('mode_reason','Tracking-mode response'),now)
                         mode = self.status.agent_state.get('mode') if not self.visual_roi_trial else None
                         if not self.visual_roi_trial and not self.status._agent_recent(now):
                             mode = None
@@ -642,7 +694,12 @@ class OperatorDisplay:
     def _start_roi_preview(self) -> None:
         now = time.monotonic()
         if not self._roi_preview_allowed(now):
-            self.status.show_notice('ROI preview needs live source video and panel', now)
+            reason = ('ROI status missing/stale' if not self._sim_roi_source_available(now) else
+                      'return video stale' if not self.status.video.live(now) else
+                      'panel state stale' if not self.status.panel.live(now) else
+                      'E-stop active' if self.status.panel_state.get('emergency') else
+                      'select Manual or disable automatic control')
+            self.status.show_notice('ROI unavailable: '+reason, now)
             return
         normal_roi = not self.visual_roi_trial and self.status.agent_state.get('mode') in ('camera', 'sim')
         if self.roi_tracking and not normal_roi and self.video.frame_identity.latest() is None:
@@ -682,7 +739,8 @@ class OperatorDisplay:
         panel = self.status.panel_state
         if panel.get('manual_active') is True:
             self._roi_manual_seen = True
-        elif panel.get('manual_active') is False and getattr(self,'_roi_manual_seen',False):
+        elif (panel.get('manual_active') is False and getattr(self,'_roi_manual_seen',False)
+                and getattr(self,'_processing_status',{}).get('processing_mode')!='roi'):
             request_id = self.roi_workflow.request_id
             self.roi_workflow.close()
             self._release_roi(request_id)
@@ -693,7 +751,8 @@ class OperatorDisplay:
         available = (self._sim_roi_source_available(now)
                      and self.status.video.live(now) and self.status.panel.live(now))
         request_id = self.roi_workflow.request_id
-        action = self.roi_workflow.update(panel, available=available)
+        action = self.roi_workflow.update(panel, available=available,
+            allow_auto=getattr(self,'_processing_status',{}).get('processing_mode')=='roi')
         if action == 'release':
             self._release_roi(request_id)
             self.status.show_notice('ROI released; fire-control OFF selects again', now)

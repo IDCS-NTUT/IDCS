@@ -495,6 +495,7 @@ def _pipeline_description(
         source
         + mux
         + f"nvinfer name=primary config-file-path={nvinfer_config.resolve()} {tracker_element}"
+        + ("! queue name=roi_owner max-size-buffers=2 max-size-bytes=0 max-size-time=0 " if seamless_roi else "")
         + tail
     )
 
@@ -706,7 +707,8 @@ def _metadata_probe(
                 if snapshot_transport is not None and snapshot_transport.requires_headers else None
             )
             if snapshot_transport is not None and snapshot_transport.requires_headers and header is None:
-                if stats.roi_pipeline is not None and stats.roi_pipeline.active:
+                if (stats.roi_pipeline is not None and stats.roi_pipeline.active
+                        and not hasattr(stats.roi_pipeline,'process_frame')):
                     stats.roi.process(None, buffer)
                 if gpu_osd_enabled:
                     _decorate_osd_metadata(pyds, batch_meta, frame_meta, object_metas, class_labels=class_labels, pipeline_fps=stats.current_pipeline_fps(), accepted_tracks=())
@@ -772,15 +774,19 @@ def _metadata_probe(
             roi_result = None
             if stats.roi_pipeline is not None and stats.roi_pipeline.active:
                 stats.roi_pipeline.record_frame(frame_meta, snapshot.frame)
-                roi_result = stats.roi.process(snapshot.frame, buffer, decoded_pts_ns=pts_ns)
+                if hasattr(stats.roi_pipeline, 'process_frame'):
+                    roi_result = stats.roi_pipeline.process_frame(snapshot.frame, buffer, pts_ns)
+                else:
+                    roi_result = stats.roi.process(snapshot.frame, buffer, decoded_pts_ns=pts_ns)
                 if roi_skipped:
                     snapshot = stats.roi.snapshot(snapshot.frame, roi_result)
             if target_selector is not None and not roi_skipped:
                 snapshot = target_selector.submit_and_apply_snapshot(snapshot)
             if stats.roi_pipeline is not None and stats.roi_pipeline.active:
                 snapshot = snapshot.model_copy(update={"roi_state": RoiStateV2(
-                    capable=stats.roi.capable, owns_selection=(roi_skipped and stats.roi.owns_selection
-                                                             and stats.roi.abort_reason is None),
+                    capable=stats.roi.capable, owns_selection=(roi_skipped and
+                        (stats.roi.processing_mode == 'roi' or stats.roi.owns_selection)
+                        and stats.roi.abort_reason is None),
                     request_id=None if stats.roi.active is None else stats.roi.active.request_id)})
             target_track_id = (
                 snapshot.selection.track_id if snapshot.selection is not None else None
@@ -817,6 +823,14 @@ def _metadata_probe(
                     accepted_tracks=snapshot.tracks if stats.tracking_enabled else None,
                 )
             if snapshot_transport is not None:
+                if roi_skipped and hasattr(stats.roi_pipeline, 'publication'):
+                    completed = stats.roi_pipeline.publication()
+                    if completed is not None:
+                        snapshot = completed
+                    elif stats.roi.owns_selection:
+                        # No fabricated current-frame result or rejuvenated
+                        # stale geometry while asynchronous native work runs.
+                        continue
                 if stats.live_settings is not None:
                     snapshot = snapshot.model_copy(update={
                         "config_digest": stats.live_settings.bundle.digest,
@@ -1401,13 +1415,13 @@ def run(argv: Sequence[str] | None = None, *, initial_bundle=None) -> int:
             print(f"[deepstream.runtime] {reason}; ROI workflow ended, YOLO remains available", flush=True)
         try:
             from jetson.deepstream.roi_runtime import RoiRuntime
-            from jetson.deepstream.roi_pipeline import RoiPipeline
+            from jetson.deepstream.resident_roi import ResidentRoiPipeline
             source = "camera" if args.live_argus else "sim"
             stats.roi = RoiRuntime(source, stats.tracker_session, build=args.roi_build,
                                    evidence_root=args.roi_evidence_root / source)
             if not stats.roi.capable:
                 roi_fail(stats.roi.error)
-            stats.roi_pipeline = RoiPipeline(stats.roi, pipeline, Gst, GLib, pyds,
+            stats.roi_pipeline = ResidentRoiPipeline(stats.roi, pipeline, Gst, GLib, pyds,
                 identity_bind=args.return_identity_bind, seed_bind=args.roi_bind, fail=roi_fail,
                 stage_clock=stage_clock, selector=target_selector, metadata_id=metadata_id,
                 metadata_pad=src_pad, metadata_data=metadata_data)

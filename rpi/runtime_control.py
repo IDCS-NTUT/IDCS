@@ -566,6 +566,7 @@ def main() -> int:
             last_effective_manual_active = effective_manual_active
             auto_blocked = roi_auto_block.suppress(
                 roi_active=roi_active,
+                resident_control=roi_lamp.resident_control_live(now_loop),
                 fire_control_valid=bool(switch_io.input_validity.get("fire_control", False)),
                 fire_control_on=bool(switch_state.get("control_cmd_enabled", False)),
             )

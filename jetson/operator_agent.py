@@ -229,6 +229,8 @@ class OperatorAgent:
     _lock_seen_s: float | None = None
     _job: threading.Thread | None = field(default=None, repr=False)
     _roi_capable: bool = False
+    _processing_mode: str = 'yolo'
+    _processing_revision: int = 0
     _roi_owns_selection: bool = False
     _roi_status_frame: int | None = None
     _roi_status_session: str | None = None
@@ -316,6 +318,8 @@ class OperatorAgent:
             "sim_scene": "swarm" if mode == "sim_swarm" else "single" if mode == "sim" else None,
             "visual_lock": self.visual_lock_active(),
             "roi_capable": self._roi_capable and self._perception_live(),
+            "processing_mode": self._processing_mode,
+            "processing_revision": self._processing_revision,
             "sim_visual_lock": self.config.mode("sim_visual_lock") is not None,
             "sim_hud_session": None if sim_catalog is None else sim_catalog.catalog.session,
             "sim_scenes": ([{"name": "single", "label": "Single"},
@@ -363,6 +367,13 @@ class OperatorAgent:
         # detector frame gives it back. Old in-flight frames cannot clear it.
         frame_id = status.get("roi_frame_id")
         sequence = status.get("sequence")
+        if (status.get('tracker_session') == self._camera_session
+                and status.get('source_ready') is True
+                and type(sequence) is int and sequence > self._roi_status_sequence
+                and status.get('processing_mode') in ('yolo','roi')
+                and type(status.get('mode_revision')) is int):
+            self._processing_mode=status['processing_mode']
+            self._processing_revision=status['mode_revision']
         if (status.get("type") == "visual_roi_status_v1"
                 and status.get("roi_capable") is True
                 and status.get("selection_owner") == "visual_lock"

@@ -19,7 +19,7 @@ from pathlib import Path
 from queue import Full, Queue
 
 from common.perception import NormalizedBoxV2, PerceptionSnapshotV2
-from common.visual_roi_seed import VisualRoiRelease, VisualRoiSeed, VisualRoiSelect
+from common.visual_roi_seed import VisualRoiRelease, VisualRoiSeed, VisualRoiSelect, VisualRoiMode
 from jetson.visual_lock.acquisition import acquire_cached
 from jetson.visual_lock.frame_cache import ExactFrameCache, bounded_catchup
 from jetson.visual_lock.managed import BoundedLog, evidence_directory
@@ -58,6 +58,7 @@ class RoiRuntime:
     def __init__(self, source, tracker_session, *, build, evidence_root,
                  factory=native_factory, clock=time.monotonic):
         self.source, self.tracker_session = source, tracker_session
+        self.build = Path(build)
         self.clock = clock
         self.commands, self.messages = Queue(maxsize=8), Queue(maxsize=128)
         self.cache = ExactFrameCache(capacity=16)
@@ -110,6 +111,12 @@ class RoiRuntime:
         except Exception as exc:
             self.error = str(exc)
         self.capable = self.borrower is not None
+        self.explicit_modes = False
+        self.processing_mode = 'yolo'
+        self.mode_revision = 0
+        self.mode_result = {}
+        self._mode_commands = deque(maxlen=128)
+        self.lock_epoch = 0
 
     @property
     def owns_selection(self):
@@ -227,7 +234,8 @@ class RoiRuntime:
         try:
             kind = message.get("type")
             cls = {"visual_roi_release_v1": VisualRoiRelease,
-                   "visual_roi_select_v1": VisualRoiSelect}.get(kind, VisualRoiSeed)
+                   "visual_roi_select_v1": VisualRoiSelect,
+                   "visual_roi_mode_v1": VisualRoiMode}.get(kind, VisualRoiSeed)
             command = cls.from_mapping(message)
             if isinstance(command, VisualRoiSelect):
                 # Removal can outlast the bounded command queue. Coalesce
@@ -341,6 +349,27 @@ class RoiRuntime:
                 self._cancel("ROI selection superseded")
                 break
             current = self.active or self.acquiring or (self.pending[0] if self.pending else None)
+            if isinstance(request, VisualRoiMode):
+                duplicate = request.command_id in self._mode_commands
+                accepted = (not duplicate and request.tracker_session == self.tracker_session
+                    and request.expected_revision == self.mode_revision
+                    and (request.mode == 'yolo' or self.capable))
+                if not duplicate:
+                    self._mode_commands.append(request.command_id)
+                    self.mode_result = dict(mode_command_id=request.command_id, mode_accepted=accepted,
+                        mode_reason='processing mode applied' if accepted else 'stale session/revision or unavailable ROI')
+                if accepted:
+                    self._cancel('processing mode changed')
+                    self._close_lock()
+                    self.processing_mode = request.mode
+                    self.mode_revision += 1
+                continue
+            if self.explicit_modes and self.processing_mode != 'roi':
+                if isinstance(request, VisualRoiSeed):
+                    self._notify(request, False, 'select ROI processing mode first')
+                elif isinstance(request, VisualRoiSelect) and request.enabled:
+                    self._refuse_select(request, 'select ROI processing mode first')
+                continue
             if isinstance(request, VisualRoiSelect):
                 if request.tracker_session != self.tracker_session:
                     self._refuse_select(request, "source session mismatch")
@@ -395,7 +424,7 @@ class RoiRuntime:
         if self._reset and self.native_owner is not None:
             self._close_lock()
             self._reset = False
-        self.yolo_skipped = self.owns_selection
+        self.yolo_skipped = self.owns_selection or self.explicit_modes and self.processing_mode == 'roi'
         if count_frame:
             self.counts["yolo_skipped" if self.yolo_skipped else "yolo_frames"] += 1
         return self.yolo_skipped
@@ -485,7 +514,7 @@ class RoiRuntime:
             self._notify(request, False, reason, generation=generation)
 
     @on_native_owner
-    def process(self, frame, buffer, *, decoded_pts_ns=None):
+    def process(self, frame, buffer, *, decoded_pts_ns=None, owned_image=None):
         """Return a VPI Output or None. YOLO decisions belong to the caller."""
         if self.draining.is_set():
             return None
@@ -540,7 +569,8 @@ class RoiRuntime:
                 self.expire_cache()
                 return None
             if self.active is None:
-                self.cache.add(frame, self.borrower.clone(buffer), decoded_pts_ns=decoded_pts_ns)
+                self.cache.add(frame, owned_image if owned_image is not None else self.borrower.clone(buffer),
+                               decoded_pts_ns=decoded_pts_ns)
                 self.counts["cache_copies"] += 1
                 if self.pending is not None:
                     request, received_s = self.pending
@@ -557,6 +587,10 @@ class RoiRuntime:
                             ("acquisitions", "roi-acquisitions.jsonl", 8_000_000)):
                         self.logs[name] = BoundedLog(self.output / filename, limit)
                     self.session = VisualLockSession(self.backend_factory, seed_output=self.output)
+                    self.lock_epoch += 1
+                    # Visual IDs cannot collide with YOLO IDs or a previous ROI
+                    # lock: controller PID/estimator histories key on identity.
+                    self.session.lock.track_id = (1 << 60) + self.lock_epoch * 1024
                     self.session.seed_diagnostics.max_writes = 64
                     box = NormalizedBoxV2(x=request.x/frame.width, y=request.y/frame.height,
                         w=request.w/frame.width, h=request.h/frame.height)
@@ -578,7 +612,8 @@ class RoiRuntime:
                         self._cancel(acquisition.reason)
                     self.cache.clear()
             else:
-                with self.borrower.borrow(buffer) as image:
+                from contextlib import nullcontext
+                with (nullcontext(owned_image) if owned_image is not None else self.borrower.borrow(buffer)) as image:
                     result = self.session.update(frame, image)
                 self.counts["vpi_updates"] += 1
                 self.vpi_ms = result.processing_ms
@@ -626,6 +661,7 @@ class RoiRuntime:
     def status(self):
         probes = self.probe_status if self.probe_state is None else self.probe_state()
         return dict(**probes, roi_window_generation=self.generation,
+            processing_mode=self.processing_mode, mode_revision=self.mode_revision, **self.mode_result,
             roi_window_retiring=self.retirement_requested,
             roi_selection_id=self.selecting,
             roi_capable=self.capable, roi_error=self.error,
@@ -654,7 +690,8 @@ class RoiRuntime:
         return dict(type="visual_roi_status_v1", source_mode=self.source,
             tracker_session=self.tracker_session, sequence=sequence,
             source_ready=ready, control_disabled=False, managed_mode=self.source,
-            selection_owner="visual_lock" if self.owns_selection and self.abort_reason is None else "detector",
+            selection_owner="visual_lock" if (self.explicit_modes and self.processing_mode == 'roi'
+                or self.owns_selection and self.abort_reason is None) else "detector",
             active_request_id=None if self.active is None or self.abort_reason is not None else self.active.request_id,
             roi_frame_id=self.current_frame_id,
             terminal_request_id=terminal["request_id"], reason=terminal["reason"],

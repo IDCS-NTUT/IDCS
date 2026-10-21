@@ -355,6 +355,7 @@ def test_normal_menu_visual_items_replace_detector_selection(display_module,mode
 def test_managed_display_opens_persisted_size_and_handles_terminal_status(display_module):
     display=display_module.OperatorDisplay.__new__(display_module.OperatorDisplay)
     display.visual_roi_trial=False
+    display._processing_pending=None
     display.status=NS(agent_state={'mode':'sim_visual_lock'},show_notice=Mock())
     display.settings=Settings(ROI_SETTINGS,None);display.settings.step('roi_box_size')
     display.menu=NS(_close=Mock());display.roi_editor=RoiEditor();display.roi_workflow=RoiPanelWorkflow()
@@ -450,6 +451,7 @@ def test_receiver_status_and_ack_are_read_without_invalidating_source(display_mo
     from rpi.display.status import SystemStatus
     display=display_module.OperatorDisplay.__new__(display_module.OperatorDisplay)
     display.visual_roi_trial=False
+    display._processing_pending=None
     display.status=SystemStatus();display.status.on_agent(dict(mode='sim_visual_lock'),1.)
     display.roi_workflow=RoiPanelWorkflow(active=True,state='pending',request_id='box')
     display.roi_source=RoiSourceLease();display._pending_roi_request='box';display._roi_request_session='run'

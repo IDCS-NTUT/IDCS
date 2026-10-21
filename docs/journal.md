@@ -1428,3 +1428,257 @@ HIL target are inactive. No trial unit remains active.
 - Code release tag is unchanged by this documentation-only receipt commit.
   No GitHub push was requested/performed. This is software rollout/recovery/ROI
   acceptance, not physical-panel, hardware, detector-quality or endurance proof.
+
+## 2026-10-21 - real menu / simulated panel ROI acceptance exposes two blockers
+
+- User requested the missing end-to-end menu test. Ran the actual deployed Pi
+  OperatorDisplay/menu/editor against normal live Camera and resident Jetson ROI,
+  with private IPC PanelState fixtures. Three separate joystick-right pushes
+  opened Menu -> Targets -> Select box; simulated Select/joystick resized and
+  positioned the box. Fixtures never reached operational GPIO, lamp or control
+  endpoints. GPIO owner PID122299 stayed unchanged; all physical/HIL units
+  remained inactive. No runtime/config source edits, commit or push were made.
+- **Acceptance failed.** Deployed ReturnIdentityReceiver sets MAXMSGSIZE1024,
+  but measured idle ROI status is already1139 bytes after a fresh camera start,
+  growing to1649 bytes after prior trials. Side-by-side Pi subscribers received
+  38/39 status messages in4s without that cap and zero with it. ZeroMQ disconnects
+  the limited receiver; capability arrives through the separate operator agent,
+  while ROI source freshness/exact displayed-frame identity remain unavailable.
+  Prior direct Jetson protocol tests did not exercise this Pi receiver boundary.
+- To isolate further faults, only the external harness substituted a bounded
+  16384-byte receive limit in memory. Production release files stayed unchanged.
+  One full camera cycle passed: real menu/editor, readable-OFF -> ON, accepted
+  exact displayed source frame84982,3s hold with91 selected observations, then
+  OFF release -> detector. Panel-ON-to-selected199.79ms; OFF-to-detector98.52ms
+  in the Pi local observation clock, not qualified photon/transit latency.
+  Initial ON and unreadable OFF followed by ON both correctly refused to lock.
+- **Second blocker:** closing/reopening around lease retirement then yielded no
+  exact frame. Subsequent trial also timed out before seeding. Jetson journal
+  shows a queued successor lease admitted and cancelled in the same second;
+  status remained roi_window_retiring=true with no probes/owner/transition and
+  generation4. Inspection identifies an inactive-window cancellation path:
+  _cancel sets retirement_requested, begin_frame refuses further work while it
+  is set, but inactive lifecycle has no owner to deactivate/finish_window.
+  This explains the persistent latch; targeted regression is still required.
+- Proposed fixes, not implemented by this test-only request: share a bounded
+  sideband message-size contract covering status/results/headers, test expanded
+  statuses through the actual receiver socket, and explicitly finish cancellation
+  of a never-activated window without bypassing active-owner drain/generation
+  protection. Add queued select/cancel/reopen integration cases, then repeat all
+  menu cycles. Do not treat the test-only cap or first successful cycle as rollout
+  acceptance. Physical joystick/switch and moving-target acceptance remain open.
+- Attempts01/02 preserved harness inproc-connect and then actual receive-cap
+  failures;03 passed the first cycle and exposed retirement;04 confirmed the
+  blocked successor. All Pi guards restored deploy-110 display. A single scoped
+  camera-video restart cleared the test-induced retirement latch; camera PID
+  changed168302 ->173414, shadow controller PID168317 stayed unchanged. Pi
+  PID123277 recovered the resulting sender change in-process to29.98fps,
+  receiver live/rebuild1, zero automatic service restarts. The deployed receive
+  cap remains a known blocker; source is normal Camera, no test owner remains.
+- Evidence and reusable harnesses: local
+  `C:/Users/Lab412/idcs-dev/seamless-roi-evidence-20261021/`; PC
+  `deployments/seamless-roi-fix-20261021/menu-e2e-results/`; original Pi artifacts
+  `deployments/menu-roi-e2e-20261021-{01,02,03,04}/`. Preserved report/frame IDs,
+  menu event traces, source/module/harness hashes, owner snapshots and journals.
+
+## 2026-10-21 - resident YOLO/ROI mode rework and camera candidate checks
+
+- In progress on fix/seamless-roi-menu-20261021 after cbfdb87; changes remain
+  uncommitted and production remains deploy-110. User requested an explicit
+  processing-mode switch, not another Camera/Visual-lock service transaction.
+- Fixed both preceding blockers: shared 16384-byte sideband receive contract,
+  tested through actual ZeroMQ; ownerless cancelled legacy windows now finish
+  retirement before admitting a successor. Added revision/session-scoped mode
+  commands and a Pi Targets -> Tracking mode: YOLO/ROI action. Release/loss does
+  not silently switch back to YOLO. Source switching remains a separate operation.
+- Candidate uses one fixed video queue/encoder path and a dedicated bounded ROI
+  worker instead of dynamic graph relinking or waiting for VPI in video callbacks.
+  Independent pre-OSD NVMM copies use a persistent CUDA-registered pool; no
+  ordinary CPU readback. Exact source identities/times survive async completion;
+  stale results cannot be relabelled as current observations. New explicit locks
+  get distinct internal track IDs; arbitrary visual ROIs do not invent depth for
+  parallax. V2 wire schema remains unchanged for existing consumers.
+- Isolated camera snapshot03 and actual Pi menu/private panel fixtures passed
+  three six-second locks/releases, then explicit return to YOLO. Tracker session
+  b2f7da5024ad46b198c52d1120c159e2 stayed fixed. Pi return video measured YOLO
+  30.025fps versus ROI 30.003fps; overall largest frame gap59.55ms, no receiver
+  rebuild. ON-to-selected168.32/167.51/169.22ms; OFF-to-idle99.00/66.75/70.28ms,
+  all Pi-local protocol timings, not photon or transit bounds. Initial ON and
+  unreadable-OFF/ON refused to seed. GPIO PID122299 was untouched.
+- Test-only verification of64 pooled CUDA frames against fresh EGL pixels had
+  zero mismatches and zero maximum pixel difference. Native log recorded1089
+  VPI updates across18s of lock holds. Worker processed1843/dropped19; test
+  readbacks/warmup were enabled, so no production steady-state drop claim yet.
+  Native main library SHA c0b7c0c8e5e68e13f79644c2bca77658f428ea7618518f62eff1ce3917c7e023;
+  pool helper SHA8f59203925a21edcdf8fa96d2cc8b2cd0141c371077e14927c985a3857a84138.
+- Snapshot03 full contracts initially failed one legacy dynamic-Gst reopen
+  test; isolated rerun passed, then full rerun288 passed. This remains a recorded
+  flaky legacy test, not a clean first-run result. Snapshot04 controller/panel/
+  menu/agent contracts191 passed. Latest candidate retains explicit ROI locks
+  when Manual is turned off, then uses the normal readable automatic gate;
+  legacy isolated ROI auto suppression remains fail-closed.
+- Added bounded moving-texture -> native VPI -> real observation/PID core ->
+  stable software mount qualification tool. Initial trial failed before native
+  tracking because standalone EGL was initialized on the producer rather than
+  native owner; second exposed a test closure scoping error. Both harness faults
+  are corrected, results retained, moving/control acceptance still pending.
+- Trials stop only recorded software owners and restore them; physical/HIL/
+  bridge/serial remain inactive. Snapshot03 guard restored deploy-110 sources,
+  Pi display and unchanged GPIO owner. Source snapshots02/03/04 and evidence
+  remain under IDCS-trials/resident-roi-20261021-* and deployments/resident-roi-
+  runtime-20261021-03, menu-roi-e2e-20261021-07, resident-control-20261021-*.
+  Coordinator/scripts/source archives also retained outside the local repo in
+  idcs-dev/seamless-roi-evidence-20261021 and PC deployments/seamless-roi-fix-20261021.
+- Not yet accepted: moving/controller loop, full software-SIM integration,
+  no-readback cadence/endurance, physical panel/actuation. No commit, push or
+  managed deployment performed in this rework; no historical assets removed.
+
+### Resident follow-up: moving native loop and software-video integration
+
+- Corrected standalone GPU verifier initializes/terminates EGL on the native
+  owner, not the producer. resident-control-20261021-03 passed1080 frames at
+  60.05Hz,1058 selected samples, zero queue drops and zero safety-zero failures.
+  Decisions:851 tracking,120 safety_hold,60 manual,20 target_invalid and29
+  capture_age_out_of_bounds during acquisition/startup. Localization p95
+  0.610px; bearing-error p95 45.77mrad. Stable50ms software rate plant, PID2.5,
+  no hardware gains, no LAN clock assumption. Previous harness failures retained.
+- Snapshot04 camera / Pi menu attempt08 retained YOLO29.94/ROI29.99fps with
+  no receiver rebuild, but first lock correctly failed seed texture. Saved crop
+ 96x151, extrema15..50, zero feature corners; earlier poster fixture is no longer
+  usable in the dark. Camera acceptance of Manual-OFF retention remains pending.
+  No quality gate relaxed; all guards restored deploy-110 and GPIO stayed122299.
+- Further inspection corrected an initial diagnosis: existing SimRoiSelection
+  already relays locked Jetson ROI on5574; Single SIM was not wholly disconnected
+  from ROI. Candidate now feeds Single directly from Jetson V2, as Swarm already
+  does, so normal YOLO and ROI use one visual input rather than the truth/ROI
+  relay. Unit/config contracts cover all three software SIM controller templates;
+  loopback intent endpoint and panel gates stay unchanged. No hardware tuning
+  changes were made.
+- Added deterministic textured software-video source (resident_sim_fixture)
+  for transport/control checks without YOLO-recognition dependence. Snapshot05
+  archive SHA4d71c529ec3fb4565bea62e2edb33e09791ea4b656b9ef390316e2bd1b6320ee.
+  Pi menu tests passed including new explicit mode routing and Manual-OFF lock
+  retention;159 local resident/managed/live-config tests passed;59 focused
+  receiver/panel/protocol tests passed. Default Windows pytest temp directory
+  was inaccessible; rerun used a new external evidence subdirectory, no deletion.
+- Full PC fixture -> Jetson -> Pi menu / PC software-controller trial is in
+  progress. Preserved harness faults: null optional controller values rejected
+  by config schema before trial; stale fake operator receipt blocked UI readiness;
+  seed fixture initially read5574, which is deliberately the ROI relay in ROI
+  mode, not raw truth. Harness now uses source-frame catalog from5572 for seed
+  geometry only, with matching frame ID and canonical source millisecond stamp;
+  the actual seed still names the exact displayed nanosecond identity. No ongoing
+  truth boxes enter the visual tracker or controller. All failed attempts restored
+  prior software owners and kept physical/HIL services inactive.
+
+### Resident acceptance receipt (software only, no managed rollout)
+
+- Full software-video trial passed on snapshot05: PC60fps verified RTP fixture
+  -> Jetson resident YOLO/ROI -> Pi actual menu/receiver -> PC real video
+  controller -> stable50ms software mount. Pi private panel fixture alone
+  supplied test authority, forwarded only to PC loopback; no GPIO publication,
+  physical pose, bridge, serial or motor activation. One explicit seed per lock
+  used source catalog geometry; ongoing VPI and control used only image-derived
+  Jetson V2 observations. The PC truth/seed evidence relay was test-only and closed.
+- Pi attempt12: three locks,252/180/180 selected observations across8.3/6/6s
+  holds. First lock survived Manual OFF for2s, drove the software camera under
+  ordinary automatic gate, then survived Manual ON. OFF released; explicit
+  menu YOLO restored detection. Session986343ba1f354211a33da256a77eca05 stayed
+  unchanged. ON-to-selected334.63/200.09/202.56ms (cold acquisition is finite,
+  video does not wait); OFF-to-idle96.68/97.88/65.50ms, local Pi timings only.
+- Return YOLO29.992fps versus ROI29.999fps,1440 decoded intervals, overall
+  p95gap42.30ms/max60.96ms. No receiver rebuild, lost or late RTP packets.
+  Native final report:3157 frames,2022 worker inputs processed, zero drops,
+  zero pending, no worker/ROI error;1265 VPI updates. Tracking native p95
+  17.45ms; worker completion lag p95 85.94ms, median17.55ms (bounded transient
+  backlog, not a negligible-latency claim). Selected-frame exact truth scoring:
+  1262 frames, localization p95 0.031px, VPI p95 17.50ms. Texture fixture is not
+  real-drone detector-quality evidence.
+- Real PC runtime:3104 ticks,101 automatic tracking ticks during the2s Auto
+  interval, all on verified visual-class source observations; zero nonzero
+  commands when test authority was disallowed. Median pointing-error magnitude
+  first20 tracking ticks115.35mrad ->last20 8.61mrad; pose0/0 ->0.0904/0.0387rad.
+  Tracking capture-age upper-end p95 78.96ms. This verifies actual networked
+  perception/control plumbing, not physical gains or operational latency bounds.
+- Final snapshot05 Jetson contracts346 passed(19.02s); Windows322 passed,
+  24 optional platform skips(13.10s). Final fault-only teardown hardening ensures
+  worker errors cannot skip pool/socket/probe cleanup; focused10 tests passed.
+- Restoration audit caught a guard omission: SIM conflicts with camera.target,
+  indirectly stopping its shadow controller; restoring source services alone
+  left the target/shadow inactive. Preserved initial receipt, checked effective
+  controller mode shadow/check-only/no motor authority, then restored ordinary
+  camera.target. CameraPID214692, shadow216323, recorder167323 active on deploy-110;
+  source/agent have no overrides, automatic restart counters0. GPIO122299 stayed
+  unchanged; Pi deploy-110 display restoredPID126074. Physical/HIL units inactive.
+  Guard inventory now includes camera.target, shadow controller and recorder;
+  source overrides remain scoped to source/agent units only.
+- Evidence consolidated on PC under deployments/seamless-roi-fix-20261021/
+  resident-final-evidence-02 (summary, complete native shutdown journal/reports,
+  three native acquisition sessions, Pi reports/events, controller trace and
+  fixture truth, owner receipts and explicit restoration correction). Original
+  artifacts remain in resident-roi-runtime-20261021-08, resident-sim-pc-20261021-05
+  and menu-roi-e2e-20261021-12. Earlier harness failures and dark-camera refusal
+  retained; no assets deleted. The first evidence copy hit socket-file warnings
+  and a root-owned evidence-directory permission error; corrected collector
+  copies regular Pi files and uses scoped sudo for retained native evidence only.
+- Software candidate is ready for release review, not installed. Outstanding
+  authority: explicit commit/deployment approval. Live camera repeat needs a
+  visible textured target; physical panel/motor acceptance remains behind the
+  wiring/bench hold. No restart-free physical motion or endurance claim is made.
+
+### Final cleanup/qualification follow-up
+
+- Snapshot06 first full Jetson run reproduced the previously recorded legacy
+  dynamic-queue stall (346 passed/1 failed), despite resident live acceptance.
+  Did not hide it by declaring a rerun clean. Added failure-only Gst pad/task/
+  last-flow/bus diagnostics. Diagnostic-only fresh-process repetitions passed3x
+  347, so the intermittent cause is not proven solely by those measurements.
+- Hardened legacy removal ordering: after upstream idle blocks, unlink the queue
+  inlet before setting NULL, leaving the outlet connected until the task stops.
+  This isolates upstream from queue-deactivation flushing without allowing a
+  live task to push into a disconnected return tail. A deterministic order
+  regression asserts both conditions. Resident switching never calls this
+  dynamic removal routine; its fixed queue remains in place.
+- Windows legacy/resident contracts153 passed/1 optional Gst skip. Five fresh
+  Jetson full-suite diagnostic runs with the exact candidate removal method
+  applied in memory each passed347; logs and method source preserved under
+  PC deployments/seamless-roi-fix-20261021/legacy-queue-diagnostics-02.
+  This is repeated bounded evidence, not a proof that all scheduling races
+  or every legacy teardown fault have been eliminated.
+- An earlier ad-hoc repeated diagnostic runner omitted the repository cwd and
+  produced unrelated config-path/fixture errors; its results are not source
+  regressions or acceptance. Corrected to fresh processes with explicit cwd.
+- Final status-only restoration check passed: ordinary Camera, busy null,
+  motors_live false; Pi30.16fps/live/no receiver restart; one Jetson perception
+  owner214692 and shadow controller216323, one Pi display126074, no PC trial
+  source/controller. deploy-110 remains installed. Receipt is
+  resident-final-evidence-02/post-restoration-check.json. Commit/deployment
+  approval remains outstanding; no commit/push/managed activation performed.
+
+- Final ordinary (no in-memory code substitution) snapshot07 Jetson validation:
+  **348 passed in19.38s**; Pi menu unittest validation also exited0. Final source
+  archive before this documentation-only receipt has SHA256
+  4a0cfaa2cba8f3246179b89df80b49013670ca03f45c23871e70267a211fc7ef,
+  staged as IDCS-trials/resident-roi-20261021-07 on PC/Jetson/Pi, not activated.
+  It includes the cleanup/order regressions and reused verified native binaries
+  on Jetson. Local evidence copies include the successful video/control summary,
+  final restoration check and five diagnostic suite logs. Code remains dirty/
+  uncommitted for review; the only difference from that archive is this receipt.
+
+## 2026-10-21 - deploy-111 software rollout approved, preparing commit
+
+- User replied proceed to the explicit commit/software-deploy question. Scope:
+  resident YOLO/ROI mode rework, validated fixes/tests/tools/docs, PC/Jetson/Pi
+  managed deployment. No GitHub push or physical motor/HIL activation authorized.
+- Preflight restored Camera, busy null, motors_live false, Pi30.02fps; one
+  Jetson perception owner214692 and shadow216323, one Pi display126074, no PC
+  trial source/controller. Production remains deploy-110 at preparation time.
+- No version-controlled YAML changes. Reviewed functional unit difference:
+  Single SIM now directly subscribes Jetson visual perception via detections.yaml;
+  loopback SIM intents and panel policy unchanged. Main VPI library unchanged;
+  the validated surface helper has additive NVMM pool-copy/CUDA-view functions.
+  Reuse only binaries whose native source matches this release and retain hashes.
+- Expanded managed validation with resident-mode, receive-boundary, exact seed,
+  legacy lifecycle, observation and PID-core tests, in addition to existing
+  UI/operator/deployment checks. Validate all hosts before activating Pi -> PC
+  -> Jetson; preserve rollback plans and never start inactive physical services.

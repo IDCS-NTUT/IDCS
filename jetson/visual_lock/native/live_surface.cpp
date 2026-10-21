@@ -66,7 +66,9 @@ void unregister(gpointer data) {
 struct Clone {
     NvBufSurface *surface = nullptr;
     bool mapped = false;
+    Registration *registration = nullptr;
     int release() {
+        if (registration) { unregister(registration); registration = nullptr; }
         int unmap = mapped ? NvBufSurfaceUnMapEglImage(surface,0) : 0;
         mapped = false;
         int destroy = surface ? NvBufSurfaceDestroy(surface) : 0;
@@ -176,6 +178,44 @@ void *vll_clone(void *buffer) {
 }
 void *vll_clone_image(void *handle) {
     return handle ? static_cast<Clone *>(handle)->surface->surfaceList[0].mappedAddr.eglImage : nullptr;
+}
+// Refill only an exclusively owned pool image. Its stable EGL/CUDA registration
+// outlives each frame; callers release VPI wrappers before returning it to pool.
+int vll_clone_copy(void *handle, void *buffer) {
+    try {
+        auto *copy = static_cast<Clone *>(handle);
+        if (!copy || !copy->surface) throw std::runtime_error("invalid clone");
+        std::unique_ptr<Borrow> source(static_cast<Borrow *>(vll_borrow(buffer)));
+        if (!source) throw std::runtime_error(error);
+        if (NvBufSurfaceCopy(source->surface,copy->surface)) throw std::runtime_error("pool NVMM copy failed");
+        error.clear(); return 0;
+    } catch (const std::exception &e) { error = e.what(); return -1; }
+}
+int vll_clone_cuda(void *handle, void **pointer, int *pitch) {
+    try {
+        auto *copy = static_cast<Clone *>(handle);
+        if (!copy || !copy->surface || !pointer || !pitch) throw std::runtime_error("invalid clone CUDA view");
+        if (!copy->registration) {
+            auto reg = std::make_unique<Registration>();
+            reg->surface=copy->surface; reg->egl=copy->surface->surfaceList[0].mappedAddr.eglImage;
+            CUcontext c=primary_context();
+            if (cuCtxPushCurrent(c)) throw std::runtime_error("clone CUDA context push failed");
+            CUresult status=cuGraphicsEGLRegisterImage(&reg->resource,static_cast<EGLImageKHR>(reg->egl),
+                                                       CU_GRAPHICS_MAP_RESOURCE_FLAGS_NONE);
+            if (!status) status=cuGraphicsResourceGetMappedEglFrame(&reg->frame,reg->resource,0,0);
+            if (status && reg->resource) { cuGraphicsUnregisterResource(reg->resource); reg->resource=nullptr; }
+            cuCtxPopCurrent(&c);
+            if (status) throw std::runtime_error("clone CUDA registration failed");
+            if (reg->frame.frameType!=CU_EGL_FRAME_TYPE_PITCH || reg->frame.planeCount!=1) {
+                unregister(reg.release());
+                throw std::runtime_error("clone is not one pitch-linear plane");
+            }
+            copy->registration=reg.release();
+        }
+        *pointer=copy->registration->frame.frame.pPitch[0];
+        *pitch=int(copy->registration->frame.pitch);
+        error.clear(); return 0;
+    } catch (const std::exception &e) { error = e.what(); return -1; }
 }
 int vll_clone_release(void *handle) {
     if (!handle) return 0;

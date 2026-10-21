@@ -9,6 +9,18 @@ from rpi.panel_indicators import (IndicatorState, PanelIndicators, RoiLampLease,
 from common.control_activity import ActivityEnvelope, AppliedControlActivity, SimActivityRelay
 
 
+def test_resident_roi_preserves_normal_auto_gate_without_clearing_legacy_latch():
+    lease=RoiLampLease()
+    assert lease.observe(json.dumps(dict(type='roi_lamp_v1',available=True,roi_active=True,
+                                        resident_control=True)),1.)
+    assert lease.resident_control_live(1.1) and not lease.resident_control_live(1.3)
+    block=RoiAutoBlock()
+    assert not block.suppress(roi_active=True,resident_control=True,fire_control_valid=True,fire_control_on=True)
+    assert block.suppress(roi_active=True,resident_control=False,fire_control_valid=True,fire_control_on=True)
+    assert block.suppress(roi_active=True,resident_control=True,fire_control_valid=True,fire_control_on=True)
+    assert not block.suppress(roi_active=True,resident_control=True,fire_control_valid=True,fire_control_on=False)
+
+
 @pytest.fixture
 def fake_smbus(monkeypatch):
     import sys

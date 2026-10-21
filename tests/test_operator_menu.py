@@ -13,6 +13,51 @@ from rpi.display.status import SystemStatus
 
 
 class OperatorMenuTests(unittest.TestCase):
+    def test_resident_mode_switch_is_not_a_source_or_service_command(self):
+        from rpi.operator_display import DisplayConfig, SETTINGS, build_menu
+        cfg = load_config_bundle(resolve_config_paths('configs/base')).data
+        modes=[]
+        self.status.agent_state.update(mode='camera',processing_mode='yolo')
+        menu=build_menu(self.status,Settings(SETTINGS,None),DisplayConfig(cfg,None),
+                        send=self.sent.append,processing_mode=modes.append)
+        menu.handle(NavEvent.MENU)
+        menu.handle(NavEvent.RIGHT)
+        self.assertEqual([r.label for r in menu.view().rows],
+                         ['Tracking mode','Planner selection','Eligible classes'])
+        self.assertEqual(menu.view().rows[0].value,'YOLO')
+        menu.handle(NavEvent.RIGHT)
+        self.assertEqual(modes,['roi'])
+        self.assertEqual(self.sent,[])
+        self.status.agent_state['processing_mode']='roi'
+        self.assertEqual([r.label for r in menu.view().rows],
+                         ['Tracking mode','Select ROI','Release ROI','Box size'])
+        self.assertEqual(menu.view().rows[0].value,'ROI')
+        menu.handle(NavEvent.RIGHT)
+        self.assertEqual(modes,['roi','yolo'])
+        self.assertEqual(self.sent,[])
+
+    def test_resident_manual_off_keeps_the_explicit_track(self):
+        from types import SimpleNamespace as NS
+        from unittest.mock import Mock
+        from rpi.display.roi_panel import RoiPanelWorkflow
+        from rpi.operator_display import OperatorDisplay
+        display=OperatorDisplay.__new__(OperatorDisplay)
+        display._roi_manual_seen=True
+        display._processing_status={'processing_mode':'roi'}
+        display.roi_workflow=RoiPanelWorkflow(active=True,state='tracking',request_id='lock',previous_on=True)
+        display.status=NS(panel_state=dict(manual_active=False,emergency=False,
+            inputs_valid={'fire_control':True},inputs={'fire_control':True}),
+            video=NS(live=lambda now:True),panel=NS(live=lambda now:True),show_notice=Mock())
+        display._sim_roi_source_available=lambda now:True
+        display.roi_editor=NS(active=False,_last_move_s=None)
+        display.menu=NS(_close=Mock())
+        display._release_roi=Mock()
+        display._update_roi_panel(1.)
+        self.assertEqual(display.roi_workflow.state,'tracking')
+        self.assertEqual(display.roi_workflow.request_id,'lock')
+        display._release_roi.assert_not_called()
+        display.menu._close.assert_not_called()
+
     def test_roi_return_keeps_panel_overlay_without_a_second_reticle_or_status(self):
         from collections import deque
         from types import SimpleNamespace as NS

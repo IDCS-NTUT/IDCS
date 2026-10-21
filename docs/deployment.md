@@ -4,6 +4,21 @@ This document replaces source-path claims in historical handovers. A release
 being present, a Git tag being fetched, and a process actually using it are
 different states. Repository synchronization is separate from deployment.
 
+## Approved rollout in preparation (2026-10-21, deploy-111)
+
+User approved commit and software-only deployment of the resident YOLO/ROI
+mode switch. Activation/verification receipts are not yet recorded; deploy-110
+remains installed until the managed rollout succeeds. The release adds a fixed
+video path, asynchronous VPI worker, reusable CUDA/NVMM image pool, expanded
+sideband receiver limit and explicit Pi tracking-mode menu. Single SIM consumes
+Jetson visual V2 directly instead of the existing truth/ROI relay. No YAML or
+physical-controller settings change. The main VPI library is unchanged; the
+surface helper adds pool copy/CUDA-view functions and must be deployed together.
+
+Bounded candidate validation and exact artifacts are in the newest journal.
+All previous releases/trials/evidence remain available for rollback. Physical
+motor/HIL services stay inactive throughout this software rollout.
+
 ## Last recorded deployment (2026-10-21, deploy-110)
 
 Code commit `a79a9b9` / tag `deploy-110` is installed on PC, Jetson and Pi from

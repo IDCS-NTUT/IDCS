@@ -25,22 +25,34 @@ units and manifests. Motor owners must not be enabled for unattended startup.
 
 ## Ordinary source changes
 
-Use the Pi **Operations -> Source & scene** menu: Camera, Camera / Visual lock, Simulator -> Single/Swarm/Visual lock, or Standby.
+Use the Pi **Operations -> Source & scene** menu: Camera, Simulator ->
+Single/Swarm, or Standby. Managed Visual-lock source modes are maintenance
+fallbacks, not console choices since deploy-110.
 The Jetson operator agent and PC mode agent own the ordered stop/start,
 fresh-source readiness checks and rollback. Do not race their transaction by
 manually starting another source.
 
 - Camera starts local Argus DeepStream, a shadow controller and the corresponding
   PC viewer. Shadow computes/records without publishing physical intents.
-- Single starts the controlled synthetic-observation software mount.
+- Deployed110 Single starts the synthetic-observation software mount, whose
+  publisher relays Jetson ROI observations while ROI owns selection. The
+  uncommitted resident-mode candidate instead connects Single directly to
+  Jetson visual perception, as Swarm already does; simulator truth stays scoring
+  evidence. This input change requires managed activation, not repo sync.
 - Swarm starts the detection-fed software mount; simulator truth is separate
   from visual identities and supplies scoring.
-- Normal Camera and both Simulator scenes expose Targets -> Select box /
+- Deployed110 normal Camera and both Simulator scenes expose Targets -> Select box /
   Release / Box size when fresh runtime ROI capability is available. This
   candidate switches YOLO/ROI inside the same DeepStream source and encoder;
   selecting or releasing a box requires no source transaction or restart.
   Release/loss returns the box and resumes YOLO on the next eligible frame;
   native libraries missing from the release disable ROI while YOLO stays up.
+
+The uncommitted resident-mode candidate replaces those Targets actions with
+**Tracking mode: YOLO / ROI**. In ROI, Select ROI / Release ROI / Box size are
+available; release/loss keeps ROI selected until explicitly choosing YOLO.
+One static video path and asynchronous tracker worker preserve video during
+mode changes and acquisition. Do not assume this menu exists on deploy-110.
   The software units add evidence `StateDirectory` roots under
   `/var/lib/idcs/visual-lock/seamless/{camera,sim}`. Review PC/Pi/Jetson V2
   consumers together and use the new [resident ROI acceptance checklist](visual_lock.md#exact-reviewer-checklist-for-this-candidate-no-motors)

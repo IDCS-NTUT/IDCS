@@ -115,6 +115,13 @@ class RoiSimAuthority:
         lease, status = self.lease or {}, self.status or {}
         fresh = (self.lease_s is not None and 0 <= now_s-self.lease_s <= .25
                  and self.status_s is not None and 0 <= now_s-self.status_s <= .25)
+        if (self.status_s is not None and 0 <= now_s-self.status_s <= .25
+                and status.get('processing_mode') in ('yolo','roi')):
+            # Resident modes use the same physical Manual/auto gate as YOLO.
+            # Never turn Manual into automatic follow through the legacy SIM
+            # exception, even if an old display lease is still in flight.
+            self.engaged=False
+            return panel
         accepted = (fresh and lease.get('enabled') is True
             and lease.get('managed_mode') == status.get('managed_mode')
             and status.get('managed_mode') in ('sim','sim_visual_lock')

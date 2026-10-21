@@ -1,7 +1,7 @@
 [Unit]
 StartLimitIntervalSec=60
 StartLimitBurst=5
-Description=IDCS video controller driving the simulated mount (PC, loopback only)
+Description=IDCS visual-perception controller driving the simulated mount (PC, loopback only)
 Requires=idcs-sim-streamer.service
 After=idcs-sim-streamer.service idcs-sim-panel.service
 PartOf=idcs-sim.target
@@ -11,9 +11,9 @@ Type=simple
 WorkingDirectory=@RELEASE@
 Environment=PYTHONPATH=@RELEASE@ PYTHONUNBUFFERED=1
 ExecStartPre=/home/idcs/Desktop/project/venv/bin/python3 tools/runtime_process_guard.py --module jetson.control.video_runtime
-ExecStartPre=/home/idcs/Desktop/project/venv/bin/python3 -m jetson.control.video_runtime --config configs/base --config-extra configs/sim/v2_scene.yaml,configs/controller/sim_mount.yaml,configs/bench/tuned.yaml --check
+ExecStartPre=/home/idcs/Desktop/project/venv/bin/python3 -m jetson.control.video_runtime --config configs/base --config-extra configs/sim/v2_scene.yaml,configs/controller/sim_mount.yaml,configs/bench/tuned.yaml,configs/controller/detections.yaml --check
 RuntimeDirectory=idcs-sim
-ExecStart=/home/idcs/Desktop/project/venv/bin/python3 -m jetson.control.video_runtime --config configs/base --config-extra configs/sim/v2_scene.yaml,configs/controller/sim_mount.yaml,configs/bench/tuned.yaml --ready-file %t/idcs-sim/controller.ready --health-file %t/idcs-sim/controller-health.json --report %t/idcs-sim/controller-report.json
+ExecStart=/home/idcs/Desktop/project/venv/bin/python3 -m jetson.control.video_runtime --config configs/base --config-extra configs/sim/v2_scene.yaml,configs/controller/sim_mount.yaml,configs/bench/tuned.yaml,configs/controller/detections.yaml --ready-file %t/idcs-sim/controller.ready --health-file %t/idcs-sim/controller-health.json --report %t/idcs-sim/controller-report.json
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=10

@@ -66,6 +66,22 @@ def test_delayed_seed_ack_cannot_rearm_after_off():
     assert workflow.state == "selecting"
 
 
+def test_resident_auto_can_keep_explicit_lock_but_cannot_seed():
+    workflow=RoiPanelWorkflow()
+    workflow.open()
+    assert workflow.update(panel(on=False,manual=False),available=True,allow_auto=True) is None
+    assert workflow.update(panel(on=True,manual=False),available=True,allow_auto=True) is None
+    assert workflow.request_id is None
+    workflow.update(panel(),available=True,allow_auto=True)
+    assert workflow.update(panel(on=True),available=True,allow_auto=True)=='lock'
+    workflow.submitted('explicit');workflow.result('explicit',True)
+    assert workflow.update(panel(on=True,manual=False),available=True,allow_auto=True) is None
+    assert workflow.state=='tracking' and workflow.request_id=='explicit'
+    assert workflow.update(panel(on=False,manual=False),available=True,allow_auto=True)=='release'
+    assert workflow.update(panel(on=True,manual=False),available=True,allow_auto=True) is None
+    assert workflow.request_id is None
+
+
 def test_unreadable_off_and_initial_on_never_lock():
     workflow = RoiPanelWorkflow()
     workflow.open()

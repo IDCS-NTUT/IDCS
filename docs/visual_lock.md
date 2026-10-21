@@ -4,6 +4,73 @@ Implemented 2026-10-07: NVIDIA **VPI CUDA DCF + Harris + forward/backward PyrLK*
 not DeepStream NvDCF and not OpenCV tracking. No YOLO output is an input.
 OpenCV in the verifier only decodes, renders and annotates pixels.
 
+## Resident processing-mode rework (candidate, 2026-10-21)
+
+Validated for the approved deploy-111 rollout; activation is not yet recorded.
+Production remains deploy-110 until the managed receipts say otherwise.
+This supersedes the dynamic lease-managed graph below when installed.
+
+- Source (Camera/Simulator) and tracking (YOLO/ROI) are independent. Pi menu:
+  Targets -> Tracking mode. ROI shows Select ROI, Release ROI and Box size.
+  Release/loss keeps ROI mode; only an explicit mode command resumes YOLO.
+- `visual_roi_mode_v1` uses5596, source session, unique command ID and expected
+  revision. Status5595 acknowledges the revision. No service-manager command.
+  Native failure still permits explicit return to YOLO. Headers/status/results
+  share a bounded16KiB receive limit.
+- `ResidentRoiPipeline` keeps one permanent queue/metadata route and encoder.
+  ROI frames bypass YOLO/NvDCF. Selecting/acquisition/tracking use a bounded
+  native worker, not a wait in the video callback. At most16 images await work.
+  Overload drops real pending frames; tracker gap/age gates remain unchanged.
+- A bounded34-image NVMM pool separates tracker pixels from nvdsosd writes,
+  reuses allocation/CUDA registration and releases input wrappers before reuse.
+  No ordinary CPU pixel readback. `IDCS_RESIDENT_VERIFY_INPUT=64` is an explicit
+  test-only gray comparison; all64 CUDA/fresh-EGL comparisons matched exactly.
+- Completed V2 observations retain source identity/time and stamp observation
+  completion. No current-frame relabelling or freshness rejuvenation. Video OSD
+  may show the most recent accepted ROI result, up to150ms since completion;
+  this display-only geometry is not an exact join to that displayed image.
+  Control retains the exact source identity. Each lock gets a distinct internal
+  visual-track namespace so PID/estimator history cannot cross locks.
+- Resident panel control uses ordinary Manual/auto-enable/E-stop policy. An
+  explicit manual seed can remain tracked after Manual OFF; auto follows only
+  through the normal gate. Auto cannot seed/edit. The former forced-auto SIM
+  exception and blanket ROI auto-block remain only for legacy sessions.
+  Arbitrary ROI has no invented depth/parallax range.
+
+Camera menu trial: three6s locks, same session, no Pi receiver rebuilds;
+YOLO30.025fps, ROI30.003fps; maximum decoded-frame gap59.55ms. These short
+static-camera trials are not moving-target, hardware or endurance acceptance.
+`tools.verify_resident_control` separately exercises actual VPI CUDA, asynchronous
+observations, ordinary assembler/PID and a stable software mount with deterministic
+texture motion and injected Manual/auto/E-stop states. It opens no sockets or
+devices and must run under the exclusive GPU software guard.
+
+That component loop passed1080 inputs at60.05Hz, zero queue drops, zero
+nonzero commands in injected E-stop/auto-OFF/manual-zero intervals. Warm native
+localization p95 was0.61px; bearing error p95 was45.77mrad on the declared
+stable software plant. This is not hardware qualification. The subsequent
+camera repeat retained30fps video but refused acquisition: its saved96x151
+crop had gray extrema15..50 and zero corners. No texture gate was relaxed.
+
+`tools.resident_sim_fixture` is a separate deterministic software-video source
+with a textured moving target and50ms rate response. Run instead of pc.streamer
+under the trial guards, using verified RTP, explicit loopback SIM intent/pose
+endpoints and a controller consuming Jetson V2, never its truth endpoint.
+Its truth/catalog is used only for one explicit operator seed per lock and
+scoring. The fixture never opens GPIO, serial or physical pose interfaces.
+
+Full software-video acceptance passed three moving-texture locks/releases,
+including Manual OFF -> Auto follow -> Manual ON on an existing lock. Same
+source session, no receiver rebuild, YOLO29.992/ROI29.999fps. Actual PC runtime
+consumed verified visual observations; first20/last20 Auto-tick median error
+115.35 ->8.61mrad. Native worker dropped zero frames, but completion lag p95
+85.94ms shows a transient queue backlog; this is not negligible-latency or
+endurance acceptance. All production software was restored afterwards. Detailed
+metrics, safety checks, test-only fixtures and restoration correction are in
+the newest journal receipt; release activation still requires approval.
+
+### Deployed110 lease-managed implementation (historical candidate basis)
+
 ## Resident ROI in Camera / Simulator
 
 Normal `jetson.deepstream.runtime` defaults `deepstream.seamless_roi: true`

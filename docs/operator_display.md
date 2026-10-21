@@ -5,6 +5,20 @@ paths. Dated trial/release deployment paragraphs below are historical, not
 instructions to reinstall old sources. Consolidation preserves panel policies;
 real switch/motor acceptance remains deferred.
 
+Resident-mode rework (uncommitted candidate,2026-10-21; deploy-110 remains
+installed): **Targets -> Tracking mode: YOLO / ROI**, independent of Camera /
+Simulator. ROI exposes **Select ROI / Release ROI / Box size**. Closing the
+editor, release or loss does not change mode. Only choosing YOLO returns to
+detection/planning. Source/encoder/services do not restart. Missing readiness
+has a specific refusal, not a hidden source fallback or a generic panel warning.
+
+Selection requires Manual, readable OFF then ON and the exact displayed source
+frame. Resident mode retains an explicit lock after Manual OFF and follows only
+through the ordinary auto gate; Auto cannot seed/edit. Manual retains steering
+when not editing; editing captures the stick without mount motion. E-stop,
+unreadable-input, freshness and lease guards remain. This candidate is not
+physical switch/motor acceptance. See newest journal entries.
+
 Shared UI styling, rendering ownership and controlled preview/benchmark checks:
 [ui_style.md](ui_style.md). Styling does not change GPIO authority or lamp policy.
 

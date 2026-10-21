@@ -1,6 +1,8 @@
 """Synchronous GPU borrowing; base backend reads gray only for seed evidence."""
 import ctypes as ct
 import os
+import threading
+from collections import deque
 from pathlib import Path
 
 from .backend import VPIBackend
@@ -81,6 +83,63 @@ class ClonedImage:
     def __enter__(self): return self
 
     def __exit__(self,*_): self.close()
+
+
+class PooledImage:
+    """One exclusive use of a persistent GPU allocation/registration."""
+    def __init__(self,pool,image):
+        self.pool,self.image=pool,image
+        self.pointer,self.cuda=image.pointer,image.cuda
+    def close(self):
+        image,self.image=self.image,None
+        if image is not None:self.pool.release(image)
+    def __enter__(self):return self
+    def __exit__(self,*_):self.close()
+
+
+class NVMMClonePool:
+    def __init__(self,borrower,capacity=34):
+        self.borrower,self.capacity=borrower,capacity
+        self.images,self.idle=[],deque()
+        self.lock=threading.Lock()
+        self.io_lock=threading.Lock()
+        self.closed=False
+        lib=borrower.lib
+        lib.vll_clone_copy.argtypes=[ct.c_void_p,ct.c_void_p]
+        lib.vll_clone_copy.restype=ct.c_int
+        lib.vll_clone_cuda.argtypes=[ct.c_void_p,ct.POINTER(ct.c_void_p),ct.POINTER(ct.c_int)]
+        lib.vll_clone_cuda.restype=ct.c_int
+
+    def acquire(self,buffer):
+        with self.io_lock:
+            with self.lock:
+                if self.closed:return None
+                image=self.idle.popleft() if self.idle else None
+                if image is None and len(self.images)>=self.capacity:return None
+            lib=self.borrower.lib
+            if image is None:
+                image=self.borrower.clone(buffer)
+                pointer,pitch=ct.c_void_p(),ct.c_int()
+                if lib.vll_clone_cuda(image.handle,ct.byref(pointer),ct.byref(pitch)):
+                    message=lib.vll_error().decode();image.close()
+                    raise RuntimeError('resident clone CUDA view: '+message)
+                image.cuda=(pointer.value,pitch.value)
+                self.images.append(image)
+            elif lib.vll_clone_copy(image.handle,hash(buffer)):
+                raise RuntimeError(lib.vll_error().decode())
+            return PooledImage(self,image)
+
+    def release(self,image):
+        with self.lock:
+            if not self.closed:self.idle.append(image)
+
+    def close(self):
+        with self.io_lock:
+            with self.lock:
+                self.closed=True
+                self.idle.clear()
+            for image in self.images:image.close()
+            self.images.clear()
 
 
 class BorrowedBackend(VPIBackend):

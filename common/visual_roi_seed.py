@@ -6,6 +6,36 @@ from dataclasses import dataclass
 from typing import Mapping
 import uuid
 
+# Shared upper bound for return identity, expanded ROI status and seed results.
+# Status carries bounded counters/terminal diagnostics, not just a frame header.
+ROI_SIDEBAND_MAX_BYTES = 16_384
+
+
+@dataclass(frozen=True)
+class VisualRoiMode:
+    """Source-session-scoped compare-and-set; never a source/service command."""
+    command_id: str
+    tracker_session: str
+    mode: str
+    expected_revision: int
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping) -> "VisualRoiMode":
+        if raw.get('type') != 'visual_roi_mode_v1':
+            raise ValueError('unexpected processing-mode type')
+        try:
+            command_id = str(uuid.UUID(str(raw['command_id'])))
+            session, mode, revision = raw['tracker_session'], raw['mode'], raw['expected_revision']
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError('invalid processing-mode request') from exc
+        if (not isinstance(session,str) or not 1 <= len(session) <= 80
+                or mode not in ('yolo','roi') or type(revision) is not int or revision < 0):
+            raise ValueError('invalid processing-mode request')
+        return cls(command_id,session,mode,revision)
+
+    def as_message(self) -> dict:
+        return dict(type='visual_roi_mode_v1', **self.__dict__)
+
 
 @dataclass(frozen=True)
 class VisualRoiSelect:

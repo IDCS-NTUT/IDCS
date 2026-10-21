@@ -44,6 +44,7 @@ class RoiLampLease:
         self.received_s: float | None = None
         self.available = False
         self.roi_active = False
+        self.resident_control = False
 
     def observe(self, payload: bytes | str, now_s: float) -> bool:
         try:
@@ -52,10 +53,12 @@ class RoiLampLease:
             return False
         if (not isinstance(message, dict) or message.get("type") != "roi_lamp_v1"
                 or type(message.get("available")) is not bool
-                or type(message.get("roi_active", False)) is not bool):
+                or type(message.get("roi_active", False)) is not bool
+                or type(message.get('resident_control',False)) is not bool):
             return False
         self.available = message["available"]
         self.roi_active = message.get("roi_active", False)
+        self.resident_control = message.get('resident_control',False)
         self.received_s = now_s
         return True
 
@@ -66,6 +69,9 @@ class RoiLampLease:
     def roi_active_live(self, now_s: float) -> bool:
         return (self.roi_active and self.received_s is not None
                 and 0 <= now_s - self.received_s < self.stale_s)
+
+    def resident_control_live(self, now_s: float) -> bool:
+        return self.resident_control and self.roi_active_live(now_s)
 
 
 class RoiManualCapture:
@@ -100,8 +106,8 @@ class RoiAutoBlock:
         self.blocked = False
 
     def suppress(self, *, roi_active: bool, fire_control_valid: bool,
-                 fire_control_on: bool) -> bool:
-        if roi_active:
+                 fire_control_on: bool, resident_control: bool = False) -> bool:
+        if roi_active and not resident_control:
             self.blocked = True
         elif self.blocked and fire_control_valid and not fire_control_on:
             self.blocked = False

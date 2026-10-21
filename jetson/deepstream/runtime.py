@@ -51,6 +51,9 @@ class RuntimeSettings:
     operator_selection: str | None = None
     return_feedback_port: int = 5003
     return_sender_report_port: int = 5004
+    seamless_roi: bool = False
+    roi_bind: str = "tcp://0.0.0.0:5596"
+    return_identity_bind: str = "tcp://0.0.0.0:5595"
 
 
 TRACKERS = ("nvsort", "nvdcf")
@@ -230,6 +233,9 @@ def load_settings(config: Mapping[str, Any], *, base_dir: Path) -> RuntimeSettin
         str(net["zmq_operator_selection"]) if net.get("zmq_operator_selection") else None,
         feedback_port,
         sender_report_port,
+        bool(ds.get("seamless_roi", False)),
+        f"tcp://0.0.0.0:{_port(str(net.get('zmq_visual_roi_seed', 'tcp://127.0.0.1:5596')), 'net.zmq_visual_roi_seed')}",
+        f"tcp://0.0.0.0:{_port(str(net.get('zmq_return_frame_identity', 'tcp://127.0.0.1:5595')), 'net.zmq_return_frame_identity')}",
     )
 
 
@@ -293,6 +299,9 @@ def build_pipeline_argv(settings: RuntimeSettings, paths: Sequence[Path], durati
         '--return-feedback-port',str(settings.return_feedback_port),
         '--return-sender-report-port',str(settings.return_sender_report_port),
     ]
+    if settings.seamless_roi:
+        argv.extend(["--seamless-roi", "--roi-bind", settings.roi_bind,
+                     "--return-identity-bind", settings.return_identity_bind])
     for mirror in settings.return_mirror_hosts:
         argv.extend(["--return-mirror-host", mirror])
     if settings.shadow_min_confidence is not None:
@@ -380,7 +389,6 @@ def run(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    import os
     import sys
     import traceback
 
@@ -393,10 +401,6 @@ if __name__ == "__main__":
         exit_code = 1
     sys.stdout.flush()
     sys.stderr.flush()
-    # Leave without interpreter teardown: once the pipeline has returned (camera
-    # released, report written, sockets and the selector worker closed), native
-    # destructors of the GStreamer/pyds objects and multiprocessing queue
-    # finalizers could block for good, and systemd then SIGKILLed the service
-    # after its stop timeout (2026-09-29: 15 s, every stop with target
-    # selection active).
-    os._exit(exit_code)
+    # ROI resources and their EGL registrations must undergo normal teardown.
+    # Do not hide a native finalizer fault with os._exit.
+    raise SystemExit(exit_code)

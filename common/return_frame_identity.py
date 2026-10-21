@@ -39,10 +39,11 @@ class RoiSourceLease:
     def observe(self, payload: Mapping[str, object], local_s: float, *, managed_mode: str | None = None) -> bool:
         session = payload.get("tracker_session")
         sequence = payload.get("sequence")
-        managed = (managed_mode in ("camera_visual_lock", "sim_visual_lock")
+        managed = (managed_mode in ("camera_visual_lock", "sim_visual_lock", "camera", "sim")
                    and payload.get("managed_mode") == managed_mode
                    and payload.get("source_mode") == managed_mode.removesuffix("_visual_lock")
-                   and payload.get("control_disabled") is False)
+                   and payload.get("control_disabled") is False
+                   and (managed_mode.endswith("_visual_lock") or payload.get("roi_capable") is True))
         if (payload.get("type") != "visual_roi_status_v1"
                 or payload.get("source_mode") not in ("sim", "camera")
                 or not (managed if managed_mode is not None else

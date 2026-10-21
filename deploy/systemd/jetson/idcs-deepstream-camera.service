@@ -15,6 +15,7 @@ Environment=PYTHONPATH=@RELEASE@
 ExecStartPre=/home/idcs/Desktop/project/bin/python tools/runtime_process_guard.py --module jetson.deepstream.runtime
 ExecStartPre=/home/idcs/Desktop/project/bin/python -m jetson.deepstream.runtime --config configs/base --config-extra configs/controller/local_camera.yaml --check
 RuntimeDirectory=idcs
+StateDirectory=idcs/visual-lock/seamless/camera
 ExecStart=/home/idcs/Desktop/project/bin/python -m jetson.deepstream.runtime --config configs/base --config-extra configs/controller/local_camera.yaml --ready-file /run/idcs/deepstream-video.ready --health-file /run/idcs/deepstream-video-health.json
 Restart=on-failure
 RestartSec=2

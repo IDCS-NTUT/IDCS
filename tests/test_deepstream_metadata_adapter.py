@@ -152,14 +152,44 @@ def test_first_metadata_frame_writes_readiness_file(tmp_path):
     assert ready.is_file()
 
 
+def test_stage_clock_missing_metadata_does_not_inflate_subsequent_frames():
+    clock = StageClock()
+    for i in range(3):
+        clock.record_infer_input(10.+i/60., pts_ns=i)
+    # The first admitted frame lost its batch metadata/callback. FIFO would
+    # report 28.27 ms forever instead of the actual 11.6 ms frame latency.
+    assert clock.consume(10.+1/60.+.0116, pts_ns=1)[1] == pytest.approx(11.6)
+    assert clock.consume(10.+2/60.+.0116, pts_ns=2)[1] == pytest.approx(11.6)
+    assert clock.report()["discarded_infer_inputs"] == 1
+
+
+def test_stage_clock_unknown_metadata_does_not_consume_a_future_frame():
+    clock = StageClock()
+    clock.record_infer_input(10., pts_ns=123)
+    assert clock.consume(10.01, pts_ns=99)[1] is None
+    assert clock.consume(10.02, pts_ns=123)[1] == pytest.approx(20.)
+
+
+def test_stage_clock_reports_real_queue_delay_and_bounds_missing_metadata():
+    clock = StageClock()
+    clock.record_infer_input(10., pts_ns=123)
+    assert clock.consume(10.037, pts_ns=123)[1] == pytest.approx(37.)
+    for i in range(1000):
+        clock.record_infer_input(11.+i/60., pts_ns=i)
+    assert len(clock.infer_input_at_s) <= 128
+    assert clock.consume(11.+999/60.+.0116, pts_ns=999)[1] == pytest.approx(11.6)
+
+
 def test_metadata_frame_refreshes_health_file(tmp_path):
     from jetson.deepstream.pipeline import VerificationStats
 
     health = tmp_path / "health.json"
     stats = VerificationStats(health_file=health)
-    stats.record_frame(SimpleNamespace(buf_pts=0), decode_to_infer_input_ms=None, infer_stage_ms=None)
+    stats.record_frame(SimpleNamespace(buf_pts=0), decode_to_infer_input_ms=12., infer_stage_ms=14.)
 
-    assert json.loads(health.read_text(encoding="utf-8"))["frames"] == 1
+    payload = json.loads(health.read_text(encoding="utf-8"))
+    assert payload["frames"] == 1
+    assert payload["stage_timing_ms_latest"] == dict(decode_to_infer_input=12., infer_and_metadata=14.)
 
 
 def test_stats_reports_current_pipeline_fps():
@@ -411,6 +441,35 @@ def test_stitcher_does_not_reuse_ids_lost_long_ago():
         stitcher.apply([], img_w=1280, img_h=720)
     (o,) = stitcher.apply([_obs(4, 0.5, 0.5)], img_w=1280, img_h=720)
     assert o.track_id == 4
+
+
+def test_snapshot_deduplicates_live_shadow_and_stitcher_output():
+    from dataclasses import replace
+    from unittest.mock import Mock
+    timing = FrameTiming(frame_id=1, src_ts_ms=1, rx_ts_ms=2, infer_ts_ms=3,
+                         img_w=1280, img_h=720)
+    live = [_object(left=100, top=100, width=50, height=50, object_id=7,
+                    confidence=confidence) for confidence in (.3, .9, .6)]
+    shadow = [_obs(7, .5, .5, matched=False), _obs(8, .4, .4, matched=False),
+              replace(_obs(8, .6, .6, matched=False), confidence=.95)]
+    snapshot = perception_snapshot_from_metadata(timing, live, shadow_tracks=shadow)
+    assert [(o.track_id, o.confidence) for o in snapshot.tracks] == [(7, .9), (8, .95)]
+    assert snapshot.tracks[0].box.x == 100/1280
+    stitcher = Mock()
+    stitcher.apply.return_value = [_obs(4, .2, .2), _obs(4, .8, .8)]
+    assert len(perception_snapshot_from_metadata(timing, live, stitcher=stitcher).tracks) == 1
+
+
+def test_stitched_aliases_diverging_after_bypass_never_duplicate_a_public_id():
+    from jetson.deepstream.metadata_adapter import TrackIdStitcher
+    stitcher = TrackIdStitcher()
+    stitcher.apply([_obs(3, .3, .3, matched=False), _obs(8, .301, .3)], img_w=1280, img_h=720)
+    # Two native aliases return at very different locations after YOLO resumes.
+    # The old fallback assigned native 3 twice when native 8 claimed stable 3.
+    out = stitcher.apply([_obs(8, .31, .3), _obs(3, .8, .8, matched=False)], img_w=1280, img_h=720)
+    assert sorted(o.track_id for o in out) == [3, 8]
+    out = stitcher.apply([_obs(8, .32, .3), _obs(8, .9, .9)], img_w=1280, img_h=720)
+    assert len(out) == 1 and out[0].track_id == 8
 
 
 def test_return_rate_gate_halves_a_60fps_stream_by_arrival_time():

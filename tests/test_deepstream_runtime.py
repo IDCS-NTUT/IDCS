@@ -61,6 +61,10 @@ def test_runtime_resolves_rtp_contract(tmp_path):
     assert argv[argv.index('--return-feedback-port')+1]=='5003'
     assert argv[argv.index('--return-sender-report-port')+1]=='5004'
     assert "--target-selection" in argv and "--return-h264" in argv and "--ready-file" in argv and "--health-file" in argv
+    assert settings.seamless_roi is False and "--seamless-roi" not in argv
+    cfg["deepstream"]["seamless_roi"] = True
+    enabled = build_pipeline_argv(load_settings(cfg, base_dir=tmp_path), [])
+    assert "--seamless-roi" in enabled
 
 
 def test_runtime_resolves_independent_return_video_profile(tmp_path):

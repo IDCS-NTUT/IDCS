@@ -13,6 +13,7 @@ import math
 import multiprocessing as mp
 import queue
 import time
+from contextlib import nullcontext
 
 import zmq
 from pathlib import Path
@@ -48,7 +49,8 @@ def _put_latest(target: Any, value: object) -> None:
                 return
 
 
-def _worker(config_snapshot: Mapping[str, Any], config_digest: str, requests: Any, results: Any) -> None:
+def _worker(config_snapshot: Mapping[str, Any], config_digest: str, requests: Any, results: Any,
+            roi_gate=None) -> None:
     try:
         config = copy.deepcopy(config_snapshot)
         learned = config.setdefault("swarm_eval", {}).setdefault("learned_model", {})
@@ -90,27 +92,34 @@ def _worker(config_snapshot: Mapping[str, Any], config_digest: str, requests: An
                 pending = None
             if snapshot is None:
                 continue
-            source = PerceptionSnapshotV2.model_validate(snapshot["snapshot"])
-            requested_digest = snapshot.get("config_digest", config_digest)
-            if requested_digest != config_digest:
-                try:
-                    updated = copy.deepcopy(snapshot["config"])
-                    updated.setdefault("swarm_eval", {}).setdefault("learned_model", {})["async_worker"] = False
-                    selector.reconfigure(updated)
-                    config_digest = requested_digest
-                except (ValueError, TypeError, KeyError) as exc:
-                    _put_latest(results, {"type": "error", "message": str(exc),
-                                          "config_digest": config_digest})
+            # The parent waits for this bounded critical section before VPI
+            # acquisition. Pending pre-ROI jobs cannot consume GPU time later.
+            with roi_gate[1] if roi_gate is not None else nullcontext():
+                if roi_gate is not None and (roi_gate[0].is_set()
+                        or snapshot.get("roi_epoch", 0) != roi_gate[2].value):
                     continue
-            operator = snapshot.get("operator") or {}
-            selector.set_operator(target_classes=operator.get("target_classes"),
-                                  lock_track_id=operator.get("lock_track_id"))
-            selected = selector.select_snapshot(source, now_s=time.monotonic())
+                source = PerceptionSnapshotV2.model_validate(snapshot["snapshot"])
+                requested_digest = snapshot.get("config_digest", config_digest)
+                if requested_digest != config_digest:
+                    try:
+                        updated = copy.deepcopy(snapshot["config"])
+                        updated.setdefault("swarm_eval", {}).setdefault("learned_model", {})["async_worker"] = False
+                        selector.reconfigure(updated)
+                        config_digest = requested_digest
+                    except (ValueError, TypeError, KeyError) as exc:
+                        _put_latest(results, {"type": "error", "message": str(exc),
+                                              "config_digest": config_digest})
+                        continue
+                operator = snapshot.get("operator") or {}
+                selector.set_operator(target_classes=operator.get("target_classes"),
+                                      lock_track_id=operator.get("lock_track_id"))
+                selected = selector.select_snapshot(source, now_s=time.monotonic())
             _put_latest(
                 results,
                 {
                     "type": "result",
                     "config_digest": config_digest,
+                    "roi_epoch": snapshot.get("roi_epoch", 0),
                     "snapshot": selected.model_dump(mode="json"),
                 },
             )
@@ -205,7 +214,7 @@ class AsyncDeepStreamTargetSelector:
     """Non-blocking bridge used exclusively by the DeepStream metadata probe."""
 
     def __init__(self, config_paths: Sequence[Path], *, operator_endpoint: str | None = None,
-                 initial_bundle=None) -> None:
+                 initial_bundle=None, enable_roi_pause=False) -> None:
         bundle = (runtime_bundle(config_paths, required_sections=("swarm_eval",))
                   if initial_bundle is None else initial_bundle)
         self._operator_ctx: zmq.Context | None = None
@@ -229,6 +238,8 @@ class AsyncDeepStreamTargetSelector:
         self._ctx = mp.get_context("spawn")
         self._requests = self._ctx.Queue(maxsize=1)
         self._results = self._ctx.Queue(maxsize=1)
+        self._roi_gate = ((self._ctx.Event(), self._ctx.Lock(), self._ctx.Value("Q", 0))
+                          if enable_roi_pause else None)
         self._latest: Mapping[str, Any] | None = None
         self._latest_received_ns: int | None = None
         self._labels = _class_labels(bundle.data)
@@ -241,10 +252,34 @@ class AsyncDeepStreamTargetSelector:
         self.applied = 0
         self._process = self._ctx.Process(
             target=_worker,
-            args=(bundle.mutable_copy(), bundle.digest, self._requests, self._results),
+            args=(bundle.mutable_copy(), bundle.digest, self._requests, self._results)
+                 + ((self._roi_gate,) if self._roi_gate is not None else ()),
             daemon=True,
         )
         self._process.start()
+
+    def pause_for_roi(self):
+        gate = self._roi_gate
+        if gate is None or gate[0].is_set():
+            return
+        gate[0].set()
+        if not gate[1].acquire(timeout=.5):
+            raise RuntimeError("detector selection did not quiesce before ROI")
+        try:
+            gate[2].value += 1
+            self._latest = self._latest_received_ns = None
+        finally:
+            gate[1].release()
+
+    def resume_from_roi(self):
+        gate = self._roi_gate
+        if gate is not None and gate[0].is_set():
+            gate[0].clear()
+            self._latest = self._latest_received_ns = None
+
+    def _roi_epoch(self):
+        gate = getattr(self, "_roi_gate", None)
+        return 0 if gate is None else gate[2].value
 
     def reconfigure(self, config: Mapping[str, Any], config_digest: str) -> None:
         """Probe safe point; each queued frame carries the desired revision.
@@ -277,6 +312,7 @@ class AsyncDeepStreamTargetSelector:
         now_s = time.monotonic()
         lock, classes = self._poll_operator()
         _put_latest(self._requests, {
+            "roi_epoch": self._roi_epoch(),
             "config": self._config, "config_digest": self._config_digest,
             "snapshot": current.model_dump(mode="json"),
             "operator": {"lock_track_id": lock, "target_classes": None if classes is None else list(classes)},
@@ -287,7 +323,9 @@ class AsyncDeepStreamTargetSelector:
                 result = self._results.get_nowait()
             except queue.Empty:
                 break
-            if result.get("type") == "result" and result.get("config_digest", self._config_digest) == self._config_digest:
+            if (result.get("type") == "result"
+                    and result.get("roi_epoch", 0) == self._roi_epoch()
+                    and result.get("config_digest", self._config_digest) == self._config_digest):
                 self._worker_config_digest = result.get("config_digest", self._config_digest)
                 self._latest = result
                 self._latest_received_ns = time.monotonic_ns()

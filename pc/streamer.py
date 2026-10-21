@@ -1310,7 +1310,9 @@ def main():
         score_reply.bind(score_endpoint)
         score_handler = ScoreResetHandler(cap._control_activity.session, cap.gen)
     perception_ep = net_cfg.get("zmq_perception_v2") if isinstance(net_cfg, Mapping) else None
-    if planner_eval_enabled and perception_ep:
+    from pc.roi_selection import SimRoiSelection
+    roi_selection = SimRoiSelection()
+    if (planner_eval_enabled or sim_perception_pub is not None) and perception_ep:
         perception_sub = ctx.socket(zmq.SUB)
         perception_sub.setsockopt(zmq.RCVHWM, 1)
         perception_sub.setsockopt(zmq.CONFLATE, 1)
@@ -1436,11 +1438,13 @@ def main():
                 for payload, received_ns in gimbal_state_sub.drain():
                     cap.handle_cam_state(payload, received_ns)
 
-            if perception_sub is not None and hasattr(cap, "handle_perception_feedback"):
+            if perception_sub is not None:
                 try:
                     while True:
                         payload = perception_sub.recv(flags=zmq.NOBLOCK)
-                        cap.handle_perception_feedback(payload)
+                        roi_selection.observe(payload, time.monotonic())
+                        if planner_eval_enabled and hasattr(cap, "handle_perception_feedback"):
+                            cap.handle_perception_feedback(payload)
                 except zmq.Again:
                     pass
 
@@ -1538,7 +1542,7 @@ def main():
                 while delayed_perception and delayed_perception[0][0] <= time.monotonic():
                     _, payload = delayed_perception.popleft()
                     try:
-                        sim_perception_pub.send_string(payload, flags=zmq.NOBLOCK)
+                        sim_perception_pub.send_string(roi_selection.payload(payload, time.monotonic()), flags=zmq.NOBLOCK)
                     except zmq.Again:
                         pass
             if not args.verified_rtp_headers:

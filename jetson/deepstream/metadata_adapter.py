@@ -55,6 +55,31 @@ class ObjectObservationV2:
     detector_matched: bool = True
 
 
+def unique_track_observations(observations: Iterable[ObjectObservationV2]) -> list[ObjectObservationV2]:
+    """One hypothesis per ID, preferring detector support then confidence.
+
+    Untracked detections remain independent. Stable ordering makes equal-score
+    duplicates deterministic, including repeated NvDCF miscellaneous metadata.
+    """
+    result = []
+    indices = {}
+    for observation in observations:
+        track_id = observation.track_id
+        if track_id is None:
+            result.append(observation)
+            continue
+        if track_id not in indices:
+            indices[track_id] = len(result)
+            result.append(observation)
+        else:
+            index = indices[track_id]
+            previous = result[index]
+            if (observation.detector_matched, observation.confidence) > (
+                    previous.detector_matched, previous.confidence):
+                result[index] = observation
+    return result
+
+
 def object_meta_to_observation_v2(
     object_meta: Any, *, img_w: int, img_h: int
 ) -> ObjectObservationV2 | None:
@@ -149,19 +174,29 @@ class TrackIdStitcher:
               ) -> list[ObjectObservationV2]:
         self._frame += 1
         frame = self._frame
-        tracked = [o for o in observations if o.track_id is not None]
+        unique = unique_track_observations(observations)
+        self.duplicates_dropped += len(observations) - len(unique)
+        tracked = [o for o in unique if o.track_id is not None]
         untracked = [o for o in observations if o.track_id is None]
         present = {o.track_id for o in tracked}
         claimed: set[int] = set()
         out: list[ObjectObservationV2] = []
         # Known tracker ids first, so a new id cannot take their stable id.
-        for observation in sorted(tracked, key=lambda o: o.track_id not in self._stable_of):
+        for observation in sorted(tracked, key=lambda o: (
+                o.track_id not in self._stable_of,
+                self._stable_of.get(o.track_id, o.track_id) != o.track_id,
+                not o.detector_matched, -o.confidence)):
             tracker_id = observation.track_id
             centre, size = _box_px(observation.box, img_w, img_h)
             stable_id = self._stable_of.get(tracker_id)
             if stable_id is None or stable_id in claimed:
                 inherited = self._stitch(centre, size, claimed, present, frame, observation.class_id)
                 stable_id = tracker_id if inherited is None else inherited
+                # Canonical IDs claim first. Diverged aliases can split back
+                # to their own native IDs, but never to an already claimed ID.
+                if stable_id in claimed:
+                    self.duplicates_dropped += 1
+                    continue
                 if stable_id != tracker_id:
                     self.stitched += 1
                 self._stable_of[tracker_id] = stable_id
@@ -305,10 +340,12 @@ def perception_snapshot_from_metadata(
             for object_meta in object_metas
         ) if observation is not None
     ]
+    observations = unique_track_observations(observations)
     reported = {o.track_id for o in observations if o.track_id is not None}
-    observations += [o for o in shadow_tracks if o.track_id not in reported]
+    observations += unique_track_observations(o for o in shadow_tracks if o.track_id not in reported)
     if stitcher is not None:
         observations = stitcher.apply(observations, img_w=timing.img_w, img_h=timing.img_h)
+    observations = unique_track_observations(observations)
     missed = missed_frames.update(observations) if missed_frames is not None else {}
     if raw_detections is not None:
         for observation in raw_detections:

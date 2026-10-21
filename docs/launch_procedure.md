@@ -35,6 +35,16 @@ manually starting another source.
 - Single starts the controlled synthetic-observation software mount.
 - Swarm starts the detection-fed software mount; simulator truth is separate
   from visual identities and supplies scoring.
+- Normal Camera and both Simulator scenes expose Targets -> Select box /
+  Release / Box size when fresh runtime ROI capability is available. This
+  candidate switches YOLO/ROI inside the same DeepStream source and encoder;
+  selecting or releasing a box requires no source transaction or restart.
+  Release/loss returns the box and resumes YOLO on the next eligible frame;
+  native libraries missing from the release disable ROI while YOLO stays up.
+  The software units add evidence `StateDirectory` roots under
+  `/var/lib/idcs/visual-lock/seamless/{camera,sim}`. Review PC/Pi/Jetson V2
+  consumers together and use the new [resident ROI acceptance checklist](visual_lock.md#exact-reviewer-checklist-for-this-candidate-no-motors)
+  before claiming continuity or unchanged idle performance.
 - Camera / Visual lock replaces DeepStream with the exclusive Argus VPI
   receiver, existing shadow controller and PC viewer. Simulator / Visual lock
   uses the exclusive VPI RTP receiver and PC Swarm software session. Neither

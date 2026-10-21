@@ -5,7 +5,7 @@ import uuid
 
 import pytest
 
-from common.visual_roi_seed import VisualRoiSeed, VisualRoiRelease
+from common.visual_roi_seed import VisualRoiSeed, VisualRoiRelease, VisualRoiSelect
 from jetson.visual_lock.frame_cache import ExactFrameCache
 from common.perception import PerceptionFrameV2
 
@@ -75,3 +75,12 @@ def test_release_is_scoped_to_one_seed_and_source_session():
                    {"tracker_session": None}, {"type": "visual_roi_seed_v1"}):
         with pytest.raises(ValueError):
             VisualRoiRelease.from_mapping({**original.as_message(), **change})
+
+
+def test_select_lease_is_strict_and_session_scoped():
+    lease = VisualRoiSelect(str(uuid.uuid4()), "run-a", True)
+    assert VisualRoiSelect.from_mapping(lease.as_message()) == lease
+    for change in ({"selection_id": "bad"}, {"tracker_session": ""},
+                   {"tracker_session": None}, {"enabled": 1}, {"type": "visual_roi_seed_v1"}):
+        with pytest.raises(ValueError):
+            VisualRoiSelect.from_mapping({**lease.as_message(), **change})

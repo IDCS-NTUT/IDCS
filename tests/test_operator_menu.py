@@ -74,7 +74,7 @@ class OperatorMenuTests(unittest.TestCase):
         display.roi_workflow = RoiPanelWorkflow(active=True,state='tracking',request_id='request',previous_on=True)
         panel = dict(manual_active=True,emergency=False,inputs_valid=dict(fire_control=True),
                      inputs=dict(fire_control=True))
-        display.status = NS(panel_state=panel,video=NS(live=lambda now:True),
+        display.status = NS(panel_state=panel,agent_state={},video=NS(live=lambda now:True),
                             panel=NS(live=lambda now:True),show_notice=Mock())
         display.video = NS(frame_identity=NS(latest=Mock(side_effect=AssertionError('already seeded'))))
         display.roi_editor = NS(_last_move_s=None)

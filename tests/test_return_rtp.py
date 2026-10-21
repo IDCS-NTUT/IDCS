@@ -51,6 +51,14 @@ def test_latency_discard_counts_are_not_confused_with_network_loss():
     assert recovery.drops=={'num-drop-on-latency':5,'num-too-late-drops':1}
 
 
+def test_receiver_monitor_disconnects_bus_once_when_branch_is_retired():
+    from unittest.mock import Mock
+    recovery=ReceiverRecovery.__new__(ReceiverRecovery)
+    recovery._closed=False;recovery._bus=NS(disconnect=Mock());recovery._bus_handler=17
+    recovery.close();recovery.close()
+    recovery._bus.disconnect.assert_called_once_with(17)
+
+
 def test_nvidia_action_bridge_never_forces_before_output_and_coalesces_storms(monkeypatch):
     bridge=NvidiaKeyframeBridge.__new__(NvidiaKeyframeBridge)
     bridge._Gst=NS(PadProbeReturn=NS(OK='ok',DROP='drop'))

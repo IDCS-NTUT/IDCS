@@ -86,13 +86,14 @@ def receiver_head(rtp_port: int, jitter_ms: int, *, feedback_host: str | None = 
 class ReceiverRecovery:
     """Wire native jitterbuffer observability; never modify codec data or PTS."""
 
-    def __init__(self, pipeline, *, on_rtp_packet=None):
+    def __init__(self, pipeline, *, on_rtp_packet=None, bus=None):
         import gi
         gi.require_version('Gst', '1.0')
         from gi.repository import Gst
         self._Gst = Gst
         self._jitters = []
         self._on_rtp_packet = on_rtp_packet
+        self._closed = False
         self.drops = {'num-drop-on-latency': 0, 'num-too-late-drops': 0}
         self.keyframe_requests = 0
         session = pipeline.get_by_name('return_session')
@@ -103,7 +104,13 @@ class ReceiverRecovery:
         pipeline.get_by_name('return_depay').get_static_pad('sink').add_probe(
             Gst.PadProbeType.EVENT_UPSTREAM, self._on_upstream)
         # Owner already runs a bus watch (or drains messages in its read loop).
-        pipeline.get_bus().connect('message::element', self.on_message)
+        self._bus = bus if bus is not None else pipeline.get_bus()
+        self._bus_handler = self._bus.connect('message::element', self.on_message)
+
+    def close(self):
+        if not self._closed:
+            self._closed = True
+            self._bus.disconnect(self._bus_handler)
 
     def _new_jitter(self, _session, jitter, _index, _ssrc):
         self._configure(jitter)

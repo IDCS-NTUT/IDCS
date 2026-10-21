@@ -1,7 +1,7 @@
-"""Bounded software-SIM ROI seed/release check; no panel, service or motor APIs.
+"""Bounded normal Camera/SIM ROI check; no panel, service or motor APIs.
 
-Run on the Jetson after the reviewer establishes one normal Simulator owner.
-The supplied pixel box must cover texture on the displayed SIM object. This
+Run on the Jetson after the reviewer establishes one normal video owner.
+The supplied pixel box must cover texture on the displayed object. This
 checks transport/selection, not detector quality or physical control.
 """
 from __future__ import annotations
@@ -23,6 +23,7 @@ def run(argv=None):
     parser.add_argument("--identity", default="tcp://127.0.0.1:5595")
     parser.add_argument("--seed", default="tcp://127.0.0.1:5596")
     parser.add_argument("--perception", default="tcp://127.0.0.1:5564")
+    parser.add_argument("--source", choices=("sim", "camera"), default="sim")
     parser.add_argument("--box", nargs=4, type=int, required=True, metavar=("X", "Y", "W", "H"))
     parser.add_argument("--duration-s", type=float, default=5.)
     parser.add_argument("--output", type=Path, required=True)
@@ -31,7 +32,7 @@ def run(argv=None):
         parser.error("duration must be 1..30 seconds")
     if args.output.exists():
         parser.error("choose a new evidence report path")
-    report = dict(started_wall_s=time.time(), box=args.box, selected_frames=0,
+    report = dict(started_wall_s=time.time(), source=args.source, box=args.box, selected_frames=0,
                   owned_frames=0, statuses=[], accepted=False, detector_returned=False)
     request = None
     selecting = None
@@ -59,6 +60,7 @@ def run(argv=None):
     started = time.monotonic()
     release_s = None
     release_required = False
+    last_perception_s = None
     error = None
     try:
         while time.monotonic()-started < 15 + args.duration_s:
@@ -71,10 +73,14 @@ def run(argv=None):
                     except zmq.Again:
                         break
                     if message.get("type") == "visual_roi_status_v1":
-                        # Refuse camera, managed fallback and isolated trials.
-                        if (message.get("source_mode") != "sim" or message.get("managed_mode") != "sim"
+                        # Refuse the other source, managed fallback and isolated trials.
+                        if (message.get("source_mode") != args.source or message.get("managed_mode") != args.source
                                 or message.get("roi_capable") is not True):
-                            raise RuntimeError("normal Simulator ROI capability required")
+                            raise RuntimeError(f"normal {args.source} ROI capability required")
+                        session = message.get("tracker_session")
+                        if "tracker_session" in report and session != report["tracker_session"]:
+                            raise RuntimeError("tracker session changed during ROI switching")
+                        report["tracker_session"] = session
                         status = (message, now)
                         if (selecting is not None and request is None
                                 and message.get("terminal_selection_id") == selecting.selection_id):
@@ -85,6 +91,9 @@ def run(argv=None):
                         report["statuses"].append(message)
                         report["statuses"] = report["statuses"][-400:]
                     elif "rtp_ssrc" in message:
+                        if "return_ssrc" in report and message["rtp_ssrc"] != report["return_ssrc"]:
+                            raise RuntimeError("return RTP sender changed during ROI switching")
+                        report["return_ssrc"] = message["rtp_ssrc"]
                         latest_frame = (message, now)
                     elif request is not None and message.get("request_id") == request.request_id:
                         if message.get("type") == "visual_roi_result_v1":
@@ -95,20 +104,30 @@ def run(argv=None):
                                     raise RuntimeError(f"ROI ended before release: {message.get('reason')}")
             if perception in events:
                 snapshot = perception_snapshot_from_json(perception.recv())
+                if request is not None and last_perception_s is not None:
+                    report["perception_gap_max_ms"] = max(report.get("perception_gap_max_ms", 0.),
+                                                          (now-last_perception_s)*1000)
+                last_perception_s = now
                 if request is not None and snapshot.frame.tracker_session == request.tracker_session:
                     state = snapshot.roi_state
                     if (release_s is None and report["owned_frames"] and state is not None
                             and not state.owns_selection):
                         raise RuntimeError("ROI returned to detector before explicit release")
                     report["owned_frames"] += int(state is not None and state.owns_selection)
-                    report["selected_frames"] += int(snapshot.selection is not None
-                        and snapshot.selection.policy == "operator_visual_lock")
+                    selected = (snapshot.selection is not None
+                                and snapshot.selection.policy == "operator_visual_lock")
+                    if selected and "first_selected_after_seed_ms" not in report:
+                        report["first_selected_after_seed_ms"] = (now-report["seed_at_s"])*1000
+                    report["selected_frames"] += int(selected)
                     if release_s is not None and state is not None and not state.owns_selection:
                         report["detector_returned"] = True
+                        report["release_to_detector_ms"] = (now-release_s)*1000
                         break
             if request is None and status is not None:
                 source, source_s = status
                 if selecting is None and source.get("source_ready") is True:
+                    if source.get("roi_active") or source.get("roi_selection_id") is not None:
+                        raise RuntimeError("another ROI workflow is active; no test selection sent")
                     selecting = VisualRoiSelect(str(uuid.uuid4()), source["tracker_session"], True)
                     report["selection"] = selecting.as_message()
                 if selecting is not None and now-select_sent_s >= .1:
@@ -118,7 +137,9 @@ def run(argv=None):
                 if (now-source_s <= .25 and now-seen_s <= .1 and source.get("source_ready") is True
                         and source.get("roi_cache_enabled") is True and source.get("roi_cache_frames", 0) >= 3
                         and selecting is not None and source.get("roi_selection_id") == selecting.selection_id
-                        and current.get("tracker_session") == source.get("tracker_session")):
+                        and current.get("tracker_session") == source.get("tracker_session")
+                        and current.get("source_clock_domain") ==
+                            {"camera": "jetson_monotonic", "sim": "pc_monotonic"}[args.source]):
                     x, y, w, h = args.box
                     request = VisualRoiSeed.from_mapping(dict(type="visual_roi_seed_v1",
                         request_id=str(uuid.uuid4()), tracker_session=current["tracker_session"],

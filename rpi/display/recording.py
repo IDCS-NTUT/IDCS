@@ -163,10 +163,18 @@ class ReturnRecorder:
         self._closing = keep
 
     def close(self) -> None:
-        if self.recording_start is not None:
-            self.set_recording(False)
+        self.begin_close()
         time.sleep(0.2)
         self._reap(time.monotonic(), force=True)
+
+    def begin_close(self) -> None:
+        """Finalize recording without sleeping on the display's event loop."""
+        if self.recording_start is not None:
+            self.set_recording(False)
+
+    def finish_close(self, now: float) -> bool:
+        self._reap(now)
+        return not self._closing
 
     def report(self) -> dict:
         active = self.active

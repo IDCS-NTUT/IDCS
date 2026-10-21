@@ -35,6 +35,33 @@ on Jetson, sender reports5004 on receivers. See [visual_lock.md](visual_lock.md)
 for candidate status, configurable ports and all-IDR fallback. This is not a
 claim that managed services have been upgraded or camera ROI is available.
 
+### Pi receiver recovery (tested candidate, not yet deployed)
+
+The display separates the UDP/RTCP/depay/decoder/recording receiver bin from
+the persistent black source, selector, colour conversion, overlay and screen
+sink. Receiver-local errors and EOS withdraw local video/ROI validity, send
+release/cancel, clear the exact-frame join and rebuild only that bin. Menus,
+GPIO subscriptions, mandatory overlays and the application process stay alive.
+Recovery never reseeds a lock; lost release delivery remains bounded by the
+existing ROI lease/watchdogs, not a new motion-authority mechanism.
+
+Retries back off from250ms to4s, with at most five automatic rebuilds in a
+fault burst. Ten seconds of healthy decoding resets the burst. Persistent
+failure keeps the black/UI branch running with VIDEO FAILED and exposes
+**Operations -> Reconnect video**. VIDEO RECOVERING identifies an active retry.
+Reports include `receiver_recovery` state, attempts, rebuilds, generation and
+last error; receiver statistics belong to that generation. Output/compositor
+failures remain fatal. A decoder without a confirmed NULL state is never
+replaced by a second decoder.
+
+Recording finalization is polled without sleeping on the UI thread, up to the
+existing2s bound; the replacement waits for it. Resumed recording starts at a
+fresh keyframe. The fallback runs30fps to match the return feed and avoid the
+10-to30fps converter renegotiation observed in the trial. Controlled SSRC,
+EOS/error and full live-camera display trials passed on the Pi; see the newest
+journal entry. Recovery and the menu hardening still require an explicitly
+approved commit and managed deployment.
+
 The scene menu, introduced in `deploy-81` (`0ce7a11`), is now under
 **Operations -> Source & scene -> Simulator -> Single / Swarm**, with
 Cancel-first confirmation. The external
@@ -50,10 +77,9 @@ fresh `sim_hud_session` from the PC producer. Missing/stale identity hides geome
 instead of substituting detector identity. The last recorded deploy-84 scene is Swarm; live state is in the host manifests.
 Physical panel switching acceptance remains deferred to the user at the bench.
 
-## Resident visual lock (2026-10-20 review candidate)
+## Resident visual lock (enabled in deploy-109)
 
-With `deepstream.seamless_roi: true` explicitly enabled (default **false** while
-idle A/B qualification is pending), normal **Camera** and **Simulator**
+With `deepstream.seamless_roi: true` (the default since deploy-109), normal **Camera** and **Simulator**
 (Single or Swarm), Targets adds
 **Select box**, **Release** and **Box size** when the normal runtime reports
 fresh ROI capability. Confirming a box gives ROI selection authority inside
@@ -77,17 +103,24 @@ the Jetson ROI selection through its existing loopback publisher; Swarm and
 camera shadow already use the normal Jetson V2 port. Only a fresh accepted SIM
 lease grants simulated auto-follow; physical ROI auto-block is unchanged.
 
-This is locally tested candidate code, not live acceptance. Cold acquisition,
-idle overhead, return continuity and native teardown still require the exact
-[Jetson/SIM/Pi/camera reviewer checklist](visual_lock.md#exact-reviewer-checklist-for-this-candidate-no-motors).
+Five bounded live-camera seed/track/release cycles passed on 2026-10-21 with
+unchanged DeepStream/Pi PIDs, tracker session and return RTP sender. This is
+software protocol acceptance, not physical joystick/switch or moving-target
+qualification; see `docs/journal.md` for evidence and the remaining display
+restart on a genuine source-mode change. The additional menu hardening below
+is not in deploy-109 until a subsequent managed release is activated.
 
 ## Managed visual lock fallback (2026-10-20)
 
-Operations -> Source & scene adds **Camera / Visual lock** and
-**Simulator -> Visual lock**. They replace the detector video owner; switching
-back to Camera or Simulator uses the same menu transaction and rollback.
-Release/loss keeps the current visual-lock source mode. Nothing starts motors.
-This candidate has not been deployed or qualified on Jetson/Pi by this agent.
+The maintenance modes `camera_visual_lock` and `sim_visual_lock` replace the
+detector video owner; they are not seamless ROI switches. Keep these modes
+available to maintenance tools, not the normal operator menu. Use
+**Targets -> Select box / Release** in Camera or Simulator instead. A temporary
+loss of ROI capability must not offer a restart-based fallback. Actual Camera /
+Simulator scene changes still use the ordered source transaction and rollback.
+Nothing starts motors. Deploy-109 hides the camera fallback while seamless
+capability is fresh; the follow-up menu patch removes both fallbacks regardless
+of capability, including Simulator's nested Visual lock action.
 
 In either mode, Targets contains **Select box**, **Release** and **Box size**
 instead of detector planner/classes. Box size is Pi-local in

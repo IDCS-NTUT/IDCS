@@ -346,7 +346,7 @@ def test_normal_menu_visual_items_replace_detector_selection(display_module,mode
     operations=menu.root.current_items()[1]
     source=operations.current_items()[0]
     simulator=source.current_items()[1]
-    assert [item.label for item in simulator.current_items()]==['Swarm','Visual lock']
+    assert [item.label for item in simulator.current_items()]==['Swarm']
     assert 'Clear Swarm score' not in [getattr(item,'label',None) for item in operations.current_items()]
     status.agent_state['mode']='camera'
     assert [getattr(item,'label',getattr(item,'title',None)) for item in targets.current_items()]==['Planner selection','Eligible classes']
@@ -369,6 +369,36 @@ def test_managed_display_opens_persisted_size_and_handles_terminal_status(displa
     display._roi_terminal('box','lost texture',1.)
     assert display.roi_workflow.request_id is None and display._roi_request_session is None
     assert display.roi_editor.active
+
+
+def test_receiver_loss_releases_roi_and_clears_freshness_without_closing_menu(display_module):
+    from rpi.display.status import SystemStatus
+    display=display_module.OperatorDisplay.__new__(display_module.OperatorDisplay)
+    display.status=SystemStatus();display.status.on_video_frame(1.)
+    display.status.show_notice=Mock()
+    display.roi_workflow=RoiPanelWorkflow(active=True,state='tracking',request_id='old')
+    display.roi_editor=NS(active=True)
+    display.menu=NS(_close=Mock())
+    display._release_roi=Mock()
+    display._video_lost('test source change')
+    display._release_roi.assert_called_once_with('old')
+    assert not display.roi_workflow.active and not display.roi_editor.active
+    assert not display.status.video.live(1.)
+    assert display.roi_source.session is None
+    display.menu._close.assert_not_called()
+
+
+def test_receiver_retry_menu_only_after_failure_and_never_sends_source_command(display_module):
+    from rpi.display.status import SystemStatus
+    status=SystemStatus();state={'state':'live'}
+    retry=Mock();send=Mock()
+    menu=display_module.build_menu(status,Settings(ROI_SETTINGS,None),NS(),send,
+        video_recovery=lambda:state,video_retry=retry)
+    operations=menu.root.current_items()[1]
+    assert 'Reconnect video' not in [getattr(x,'label',None) for x in operations.current_items()]
+    state['state']='failed'
+    action=next(x for x in operations.current_items() if getattr(x,'label',None)=='Reconnect video')
+    action.run();retry.assert_called_once_with();send.assert_not_called()
 
 
 @pytest.mark.parametrize('installed',(False,True))

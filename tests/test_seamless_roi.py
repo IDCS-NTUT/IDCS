@@ -2063,7 +2063,7 @@ def test_idle_capability_preserves_normal_hud_and_active_roi_names_its_owner(dis
     display.menu = NS(view=lambda: NS(kind="menu"))
     display.hud_state = NS(view=lambda *a, **kw: HudView("CAMERA", ""))
     display.hud_renderer = NS(render=Mock(return_value=[]))
-    display.video = NS(frame_size=(1280, 720), set_overlay=Mock())
+    display.video = NS(frame_size=(1280, 720), set_overlay=Mock(), recovery_status=lambda:dict(state='live'))
     display._sim_roi_source_available = lambda _: True
     display._boxes = lambda: ()
     display._drawn_key = None

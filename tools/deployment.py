@@ -367,7 +367,8 @@ class Deployment:
             'tests/test_deepstream_accepted_osd.py','tests/test_flight_recorder.py','tests/test_sim_truth_capture.py',
             'tests/test_managed_visual_lock.py','tests/test_roi_editor.py','tests/test_roi_panel_workflow.py',
             'tests/test_visual_lock_live_trial.py','tests/test_ui_style.py','tests/test_hud_design.py','tests/test_video_health.py','tests/test_v2_ui_hud.py','tests/test_v2_hud_attitude.py',
-            'tests/test_serial_io_ipc.py','tests/test_operator_display.py','tests/test_sim_score.py']
+            'tests/test_serial_io_ipc.py','tests/test_operator_display.py','tests/test_sim_score.py',
+            'tests/test_pi_receiver_recovery.py','tests/test_return_rtp.py','tests/test_rpi_recording.py']
         tests = [p for p in tests if (self.source/p).exists()]
         if self.role=='pc':
             # Pi operator_display imports GstVideo, unavailable in the PC's

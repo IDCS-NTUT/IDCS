@@ -286,9 +286,10 @@ def test_display_pipeline_description():
         gi.require_version("GstVideo", "1.0")
     except ValueError:
         pytest.skip("GstVideo typelib not installed")
-    from rpi.display.video import pipeline_description
+    from rpi.display.video import display_description,receiver_description
 
-    text = pipeline_description(port=5002, jitter_ms=20, sink="waylandsink fullscreen=true", width=1280, height=720)
+    display=display_description(sink="waylandsink fullscreen=true",width=1280,height=720)
+    text=display+receiver_description(port=5002,jitter_ms=20)
     assert "port=5002" in text and "v4l2h264dec" in text and "overlaycomposition" in text
     assert "waylandsink fullscreen=true" in text
     assert text.index('v4l2convert') < text.index('overlaycomposition')  # blend RGB, not repeated YUV conversion

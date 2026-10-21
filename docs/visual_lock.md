@@ -4,17 +4,19 @@ Implemented 2026-10-07: NVIDIA **VPI CUDA DCF + Harris + forward/backward PyrLK*
 not DeepStream NvDCF and not OpenCV tracking. No YOLO output is an input.
 OpenCV in the verifier only decodes, renders and annotates pixels.
 
-## Resident ROI in Camera / Simulator (2026-10-20 review candidate)
+## Resident ROI in Camera / Simulator
 
-Normal `jetson.deepstream.runtime` leaves `deepstream.seamless_roi: false` by
-default, pending the lifecycle/native review gates below. With it explicitly enabled,
+Normal `jetson.deepstream.runtime` defaults `deepstream.seamless_roi: true`
+since deploy-109. With it enabled,
 Targets -> Select box / Release / Box size works in Camera and both
 Simulator scenes when fresh runtime V2 reports `roi_state.capable`. Selecting
 a box changes selection ownership inside the current process; it does not
 change mode, source, encoder, RTP session or service. The two managed VPI-only
-modes below remain available as fallback. This candidate has scoped Jetson
+modes below remain maintenance fallbacks, not ordinary ROI menu actions. The implementation has scoped Jetson
 round-7 lab checks recorded in
-`docs/journal.md`; it is not a deployment receipt or Pi/hardware acceptance.
+`docs/journal.md`. The 2026-10-21 follow-up records five live-camera protocol
+cycles without service/session replacement; physical panel and hardware
+acceptance remain separate. Use host manifests for the installed release.
 
 Idle uses exactly the off graph and ordinary metadata probe placement:
 `RoiPipeline.__init__` installs no ROI frame, event or packet probes and creates

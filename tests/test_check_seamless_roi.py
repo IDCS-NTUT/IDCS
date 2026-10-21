@@ -10,7 +10,8 @@ from tools import check_seamless_roi as helper
 
 @pytest.mark.parametrize("failure", (None, "select_send", "after_select", "seed_send",
                                    "after_seed", "release_send", "interrupt", "cleanup"))
-def test_helper_waits_for_peer_and_cancels_on_every_exit(tmp_path, monkeypatch, failure):
+@pytest.mark.parametrize("source", ("sim", "camera"))
+def test_helper_waits_for_peer_and_cancels_on_every_exit(tmp_path, monkeypatch, failure, source):
     clock = NS(now=100.)
     peer = NS(select=None, request=None, released=False, result_sent=False, commands=[], pending=[],
               delayed=False, closed=[], sends=0)
@@ -63,11 +64,12 @@ def test_helper_waits_for_peer_and_cancels_on_every_exit(tmp_path, monkeypatch, 
         def poll(self, _timeout):
             clock.now += .02
             capable = not (failure == "after_select" and peer.select is not None)
-            peer.pending = [dict(type="visual_roi_status_v1", source_mode="sim", managed_mode="sim",
+            peer.pending = [dict(type="visual_roi_status_v1", source_mode=source, managed_mode=source,
                 roi_capable=capable, source_ready=True, tracker_session="session", roi_cache_enabled=True,
                 roi_cache_frames=3, roi_selection_id=None if peer.select is None else peer.select["selection_id"]),
                 dict(rtp_ssrc=1, tracker_session="session", frame_id=10,
-                source_time_ns=1_000_000, source_clock_domain="pc_monotonic")]
+                source_time_ns=1_000_000, source_clock_domain=
+                    {"sim": "pc_monotonic", "camera": "jetson_monotonic"}[source])]
             if peer.request is not None and not peer.result_sent:
                 peer.result_sent = True
                 peer.pending.append(dict(type="visual_roi_result_v1", accepted=True,
@@ -83,7 +85,7 @@ def test_helper_waits_for_peer_and_cancels_on_every_exit(tmp_path, monkeypatch, 
            selection=None if peer.released else NS(policy="operator_visual_lock")))
     output = tmp_path/"helper.json"
     result = helper.run(["--box", "530", "247", "96", "72", "--duration-s", "1",
-                         "--output", str(output)])
+                         "--source", source, "--output", str(output)])
     report = json.loads(output.read_text())
     assert result == int(failure is not None and failure != "cleanup")
     assert peer.delayed and report["elapsed_s"] >= .3
@@ -93,6 +95,10 @@ def test_helper_waits_for_peer_and_cancels_on_every_exit(tmp_path, monkeypatch, 
         assert any(command["type"] == "visual_roi_release_v1" for command in peer.commands)
     if failure is None:
         assert report["accepted"] and report["selected_frames"] and report["detector_returned"]
+        assert report["source"] == source and report["tracker_session"] == "session"
+        assert report["return_ssrc"] == 1
+        assert report["first_selected_after_seed_ms"] >= 0
+        assert report["release_to_detector_ms"] >= 0
         # Renew the original lease throughout lock; no new lease/cache is opened.
         assert sum(command == peer.commands[0] for command in peer.commands) > 2
     if failure == "cleanup":

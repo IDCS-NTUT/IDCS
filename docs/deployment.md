@@ -4,7 +4,30 @@ This document replaces source-path claims in historical handovers. A release
 being present, a Git tag being fetched, and a process actually using it are
 different states. Repository synchronization is separate from deployment.
 
-## Last recorded deployment (2026-10-21, deploy-107)
+## Last recorded deployment (2026-10-21, deploy-109)
+
+PC and Jetson were already running `5c18912` / deploy-109 while Pi still ran
+deploy-107. Pi deploy-109 had been staged and validated but never activated.
+The follow-up activated Pi deploy-109 after refreshing the stale owner inventory
+and validating again (83 tests). The exact reviewed config difference is
+`deepstream.seamless_roi: false -> true`, using `IDCS-build/deploy109-policy.json`.
+Managed activation/initial verification passed. The Pi display subsequently
+restarted once during the one-time source transaction from Camera / Visual lock
+back to Camera; repeat strict verification therefore correctly rejects its
+nonzero restart count. That evidence was not reset or hidden.
+
+The running source is normal Camera, with DeepStream on deploy-109; the dedicated
+VPI camera service and all physical-motion units are inactive. Five subsequent
+in-process ROI locks/releases kept camera PID155062, Pi display PID120252,
+tracker session and RTP sender unchanged. See `docs/journal.md` and
+`~/Desktop/project/deployments/seamless-roi-fix-20261021/` for scoped evidence.
+The extra patch removing both managed ROI source choices unconditionally is
+tested but uncommitted/undeployed pending explicit commit approval. The subsequent
+Pi receiver-only recovery patch has also passed controlled native and full
+camera-UI trials but is not part of deploy-109. Do not
+mistake this existing-release activation for deployment of that follow-up patch.
+
+## Earlier deployment (2026-10-21, deploy-107)
 
 Commit `c87e023` / tag `deploy-107` is installed on PC, Jetson and Pi. On top
 of deploy-105 it carries seamless ROI (YOLO <-> visual lock in the DeepStream

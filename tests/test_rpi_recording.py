@@ -25,13 +25,12 @@ def test_each_recording_starts_at_a_keyframe():
 def test_pipeline_has_recording_branch_only_when_configured():
     pytest.importorskip("gi")
     try:
-        from rpi.display.video import pipeline_description
+        from rpi.display.video import receiver_description
     except (ImportError, ValueError) as exc:
         pytest.skip(f"GStreamer bindings unavailable: {exc}")
-    plain = pipeline_description(port=5002, jitter_ms=20, sink="fakesink", width=1280, height=720)
+    plain = receiver_description(port=5002, jitter_ms=20)
     assert "tee" not in plain and "splitmuxsink" not in plain
-    rec = pipeline_description(port=5002, jitter_ms=20, sink="fakesink", width=1280, height=720,
-                               record_segment_s=60)
+    rec = receiver_description(port=5002, jitter_ms=20, record_segment_s=60)
     assert "h264parse ! tee name=return_tee allow-not-linked=true ! v4l2h264dec" in rec
 
 

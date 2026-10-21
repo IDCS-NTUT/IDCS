@@ -153,7 +153,9 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
                roi_preview: Callable[[], None] = lambda: None,
                visual_roi_trial: bool = False,
                roi_available: Callable[[], bool] = lambda: False,
-               roi_release: Callable[[], None] = lambda: None) -> Menu:
+               roi_release: Callable[[], None] = lambda: None,
+               video_recovery: Callable[[], dict] = lambda: {},
+               video_retry: Callable[[], None] = lambda: None) -> Menu:
     version = _version()
 
     def visual_mode() -> bool:
@@ -208,10 +210,6 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
                        value='current' if state.get('mode')=='sim' and state.get('sim_scene')==scene['name'] else None)
                 for scene in state.get('sim_scenes') or ()
                 if isinstance(scene,dict) and scene.get('name') in ('single','swarm') and 'label' in scene]
-        if state.get('sim_visual_lock'):
-            items.append(Action('Visual lock',lambda: send(OperatorCommand('set_mode',mode='sim_visual_lock')),
-                confirm='Switch to Simulator / Visual lock?',key=('mode','sim_visual_lock'),
-                value='current' if state.get('mode') == 'sim_visual_lock' else None))
         return items
 
     def mode_items() -> list[Page | Action]:
@@ -221,10 +219,11 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
                 Action(m["label"], lambda name=m["name"]: send(OperatorCommand("set_mode", mode=name)),
                        confirm=f"Switch to {m['label']}?", key=("mode", m["name"]),
                        value="current" if m["name"] == current else None)
-                for m in state.get("modes") or () if isinstance(m, dict) and "name" in m and m["name"] != "sim_visual_lock"
-                # Seamless ROI (Targets -> Select box) replaces the managed
-                # fallback; offering both made "activate ROI" stop DeepStream.
-                and not (m["name"] == "camera_visual_lock" and seamless_roi())]
+                for m in state.get("modes") or () if isinstance(m, dict) and "name" in m
+                # ROI is a Targets operation, never a source-mode transaction.
+                # Keep managed fallback modes available to maintenance tools,
+                # not the operator menu, even while capability is warming/stale.
+                and m["name"] not in ("camera_visual_lock", "sim_visual_lock")]
 
     def class_items() -> list[Action]:
         state = status.agent_state
@@ -243,6 +242,8 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
                    confirm="Stop recording?" if recording else "Start recording?",
                    value="on" if recording else "off"),
         ]
+        if video_recovery().get('state') == 'failed':
+            items.append(Action('Reconnect video', video_retry))
         state = status.agent_state
         if state.get('mode') == 'sim' and state.get('sim_scene') == 'swarm' and not visual_mode():
             items.append(Action('Clear Swarm score',
@@ -329,7 +330,9 @@ class OperatorDisplay:
         self._roi_manual_seen = False
         self.menu = build_menu(self.status, self.settings, config, self._send,
                                self._hud_details, self._start_roi_preview, visual_roi_trial,
-                               lambda: self._sim_roi_source_available(time.monotonic()), self._menu_release_roi)
+                               lambda: self._sim_roi_source_available(time.monotonic()), self._menu_release_roi,
+                               video_recovery=lambda: self.video.recovery_status(),
+                               video_retry=lambda: self.video.retry_receiver())
         self.config_menu = ConfigMenu(self._send_config,
             lambda: fire_control_enabled(self.status, time.monotonic()))
         self.menu.config_menu = self.config_menu
@@ -381,7 +384,7 @@ class OperatorDisplay:
                                  feedback_host=config.return_feedback_host,
                                  feedback_port=config.return_feedback_port,
                                  sender_report_port=config.return_sender_report_port,
-                                 recording=config.recording)
+                                 recording=config.recording, on_receiver_lost=self._video_lost)
         if config.return_frame_identity:
             self.identity_receiver = ReturnIdentityReceiver(config.return_frame_identity,self.video.frame_identity)
         self._drawn_key: object = None
@@ -462,8 +465,23 @@ class OperatorDisplay:
         self._release_roi(request)
         self.status.show_notice('ROI released; GPIO12 OFF selects again',time.monotonic())
 
+    def _video_lost(self, reason: str) -> None:
+        """Receiver faults withdraw ROI immediately, independently of its lease."""
+        self.status.video.last_s = None
+        self.status.video._times.clear()
+        from common.video_health import ReturnVideoHealth
+        self.status.video_health = ReturnVideoHealth()
+        request = self.roi_workflow.request_id
+        self._release_roi(request)
+        self.roi_workflow.close()
+        self.roi_editor.active = False
+        self.roi_source = RoiSourceLease()
+        self.status.show_notice('Return video lost; receiver recovering', time.monotonic())
+        log.warning('ROI/video authority invalidated: %s', reason)
+
     def tick(self) -> bool:
         now = time.monotonic()
+        self.video.service(now)
         self._read_messages(now)
         if self.roi_workflow.active and not self.visual_roi_trial and (not self.roi_tracking or not self._sim_roi_source_available(now)):
             request = self.roi_workflow.request_id
@@ -537,6 +555,7 @@ class OperatorDisplay:
                         frame_id=frame.frame_id,source_time_ns=frame.source_time_ns,
                         source_clock_domain=frame.source_clock_domain))
                 report['return_receiver'] = self.video.receiver_stats()
+                report['receiver_recovery'] = self.video.recovery_status()
                 report['recording'] = None if self.video.recorder is None else self.video.recorder.report()
                 report['roi'] = dict(enabled=self.roi_tracking,active=self.roi_editor.active,
                     state=self.roi_workflow.state,source_available=self._sim_roi_source_available(now),
@@ -834,6 +853,11 @@ class OperatorDisplay:
                            if self.roi_tracking and self.roi_editor.active
                            and self.roi_workflow.state in ('selecting','pending') else [])))
         alerts = self.status.alerts(now)
+        recovery = self.video.recovery_status()
+        if recovery['state'] == 'recovering':
+            alerts.append('VIDEO RECOVERING')
+        elif recovery['state'] == 'failed':
+            alerts.append('VIDEO FAILED: Operations > Reconnect video')
         fire_state = self.status.fire_text(now)
         boxes = self._boxes()
         notice = self.status.current_notice(now)
@@ -928,12 +952,21 @@ def main() -> int:
     failed = []
 
     def on_error(_bus, message) -> None:
+        if display.video.handle_message(message):
+            return
         error, debug = message.parse_error()
         failed.append(error.message)
         log.error("video pipeline error: %s (%s)", error.message, debug)
         loop.quit()
 
     bus.connect("message::error", on_error)
+    def on_output_eos(_bus, _message) -> None:
+        # Receiver EOS is intercepted before the display branch. An EOS here
+        # means the persistent output itself stopped, not a recoverable sender.
+        failed.append('display output EOS')
+        log.error('display output EOS')
+        loop.quit()
+    bus.connect('message::eos', on_output_eos)
     GLib.timeout_add(int(TICK_S * 1000), display.tick)
     for signum in (2, 15):  # SIGINT, SIGTERM
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signum, lambda: (loop.quit(), False)[1])

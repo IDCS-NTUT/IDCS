@@ -29,7 +29,7 @@ class OperatorMenuTests(unittest.TestCase):
         display.roi_workflow = NS(state='camera')
         display.hud_state = NS(view=lambda *args,**kwargs:HudView('UNAVAILABLE',''))
         display.hud_renderer = NS(render=Mock())
-        display.video = NS(frame_size=(1280,720),set_overlay=Mock())
+        display.video = NS(frame_size=(1280,720),set_overlay=Mock(),recovery_status=lambda:dict(state='live'))
         display._boxes = lambda:()
         display._drawn_key = None
         display.render_ms = deque(maxlen=3)
@@ -211,7 +211,7 @@ class OperatorMenuTests(unittest.TestCase):
         display.visual_roi_trial = False
         display.hud_state = NS(view=lambda *args, **kwargs: NS(source='camera'))
         display.hud_renderer = NS(render=Mock(return_value=['ordinary HUD']))
-        display.video = NS(frame_size=(1280, 720), set_overlay=Mock())
+        display.video = NS(frame_size=(1280, 720), set_overlay=Mock(),recovery_status=lambda:dict(state='live'))
         display._boxes = lambda: ()
         display._drawn_key = None
         display.render_ms = deque(maxlen=3)
@@ -270,7 +270,7 @@ class OperatorMenuTests(unittest.TestCase):
     def test_mode_labels_and_current_status(self):
         self.menu.handle(NavEvent.RIGHT)  # Source & scene
         view = self.menu.view()
-        self.assertEqual([r.label for r in view.rows], ["Camera", "Simulator", "Camera / Visual lock", "Standby"])
+        self.assertEqual([r.label for r in view.rows], ["Camera", "Simulator", "Standby"])
         self.assertEqual(view.rows[0].value, "current")
 
     def test_seamless_roi_hides_managed_camera_visual_lock(self):
@@ -278,6 +278,46 @@ class OperatorMenuTests(unittest.TestCase):
         self.status.on_agent(state, time.monotonic())
         self.menu.handle(NavEvent.RIGHT)  # Source & scene
         self.assertEqual([r.label for r in self.menu.view().rows], ["Camera", "Simulator", "Standby"])
+
+    def test_managed_roi_is_never_offered_during_capability_loss_or_fallback(self):
+        self.menu.handle(NavEvent.RIGHT)
+        for mode in ('camera', 'sim', 'mixed', 'camera_visual_lock', 'sim_visual_lock'):
+            for capable in (False, True):
+                self.status.agent_state.update(mode=mode, roi_capable=capable)
+                self.assertEqual([r.label for r in self.menu.view().rows],
+                                 ['Camera', 'Simulator', 'Standby'])
+        self.assertEqual(self.sent, [])
+
+    def test_simulator_submenu_never_offers_restart_based_roi(self):
+        self.status.agent_state.update(mode='sim', sim_visual_lock=True, roi_capable=True,
+            sim_scenes=[dict(name='single', label='Single'), dict(name='swarm', label='Swarm')])
+        self.menu.handle(NavEvent.RIGHT)
+        self.menu.handle(NavEvent.DOWN)
+        self.menu.handle(NavEvent.RIGHT)
+        for capable in (True, False):
+            self.status.agent_state['roi_capable'] = capable
+            self.assertEqual([r.label for r in self.menu.view().rows], ['Single', 'Swarm'])
+        self.assertEqual(self.sent, [])
+
+    def test_targets_select_and_release_use_callbacks_not_source_commands(self):
+        from unittest.mock import Mock
+        from rpi.operator_display import DisplayConfig, SETTINGS, build_menu
+        cfg = load_config_bundle(resolve_config_paths('configs/base')).data
+        for mode in ('camera', 'sim'):
+            self.status.agent_state.update(mode=mode, roi_capable=True, visual_lock=False)
+            preview, release = Mock(), Mock()
+            menu = build_menu(self.status, Settings(SETTINGS, None), DisplayConfig(cfg, None),
+                              self.sent.append, roi_preview=preview, roi_release=release)
+            menu.handle(NavEvent.MENU)
+            menu.handle(NavEvent.RIGHT)  # Targets
+            self.assertEqual([r.label for r in menu.view().rows[:3]],
+                             ['Select box', 'Release', 'Box size'])
+            menu.handle(NavEvent.RIGHT)
+            preview.assert_called_once_with()
+            menu.handle(NavEvent.DOWN)
+            menu.handle(NavEvent.RIGHT)
+            release.assert_called_once_with()
+        self.assertEqual(self.sent, [])
 
     def test_sim_action_requires_confirm_and_sends_correct_command(self):
         self.menu.handle(NavEvent.RIGHT)

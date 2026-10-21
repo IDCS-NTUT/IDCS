@@ -1249,3 +1249,136 @@ HIL target are inactive. No trial unit remains active.
   video loss).
 - Live: Jetson 59 fps, Pi 30 fps CAMERA, overlay p95 3.7 ms, recording on.
   `seamless_roi` false; enabling + Pi panel Select box test awaits the bench.
+
+## 2026-10-21 - seamless ROI deployment mismatch corrected; menu hardening pending
+
+- Root cause: PC/Jetson used deploy-109 (`5c18912`) but Pi still used deploy-107.
+  Its Source & scene -> Camera / Visual lock sent `set_mode(camera_visual_lock)`,
+  explicitly stopping DeepStream and starting the dedicated VPI camera owner.
+  Operator logs show 12:37:36 -> 12:37:46 and 12:49:03 -> 12:49:13 transitions.
+  The intended Targets -> Select box callback instead sends ROI lease/seed
+  messages to the existing process. This is a deployment/UI routing issue,
+  not a requirement to restart DeepStream for resident ROI.
+- Activated the existing Pi deploy-109 through the managed installer. Initial
+  activation refused a changed display owner (nine earlier automatic restarts);
+  refreshed plan with the existing exact deploy109 config policy, revalidated
+  83 tests in 4.709s, then activation/initial verify passed. No unit overrides,
+  immutable release files or validation gates were bypassed.
+- Returned once through the operator agent from dedicated Camera / Visual lock
+  to normal Camera; readiness passed. That genuine source/SSRC change caused
+  Pi `return_input` to fail `not-linked (-1)` and automatically restart once.
+  Its subsequent strict managed verify correctly fails on NRestarts=1. Counter
+  was retained. General source-change receiver recovery remains a separate
+  known issue; do not claim an entirely clean deployment verification.
+- Normal camera PID155062 and Pi display PID120252 stayed unchanged across
+  five explicit three-second camera ROI acquire/track/release cycles. All five
+  were accepted and returned detector ownership; selected observations:
+  128,133,134,134,134. Tracker session `3e4c669567ba44d680cfd86ce77ebfb6` and
+  return SSRC385895955 stayed identical. Camera restarts0 / Pi restarts1 before
+  and after the repeated tests. No extra GPU/video owner or motor stack ran.
+- Used an explicit textured poster region from the existing Pi compositor
+  screenshot: source pixels x16,y210,w96,h150 at1280x720. No learned detection,
+  SIM truth, GPIO injection, reseed or weakened quality/timing gate was used.
+  Final cycle: command-to-first-selected observation129.43ms,
+  release-to-detector28.69ms, maximum local perception receive gap91.47ms.
+  These are short local protocol measurements, not photon/transit latency,
+  moving-target accuracy, continuous60Hz or physical panel qualification.
+- Evidence retained on PC outside source:
+  `deployments/seamless-roi-fix-20261021/idcs-seamless-camera-20261021-01.json`
+  through `-05.json`; local copies under
+  `C:/Users/Lab412/idcs-dev/seamless-roi-evidence-20261021/`.
+- Additional source hardening removes both managed visual-lock modes from the
+  operator menu, including Simulator's nested fallback, even with stale/false
+  capability or a currently active fallback. Maintenance API modes remain.
+  Added regression coverage for both normal sources, no-source-command ROI
+  callbacks, fallback states and capability loss. Extended the bounded check
+  helper with explicit camera/source-clock, session/SSRC stability and timing
+  reporting; it refuses an already active ROI workflow.
+- Tests: focused Windows suite163 passed /22 skipped (missing real gi/cairo);
+  all23 candidate real-menu tests pass on Pi with actual dependencies. Windows
+  default pytest Temp directory was inaccessible; a fresh explicit task-only
+  basetemp worked. The first isolated Pi runner needed the release cwd for
+  relative config paths; corrected runner then passed. `git diff --check` passes.
+- Source/doc changes are in local branch `fix/seamless-roi-menu-20261021`,
+  worktree `C:/Users/Lab412/idcs-dev/seamless-roi-fix`, based on `5c18912`.
+  No commit/push or new-release activation performed without explicit approval.
+  Thus the existing deploy-109 camera fix is live, but additional unconditional
+  menu hardening is not deployed. All physical/HIL units remain inactive.
+
+## 2026-10-21 - Pi display receiver recovery implemented and verified, not deployed
+
+- User requested display recovery. Existing uncommitted menu/ROI changes were
+  preserved on `fix/seamless-roi-menu-20261021` based on `5c18912`; no commit,
+  push, immutable-release edit or permanent service-path change was made.
+- Split ReturnVideo into a persistent display/fallback/overlay/sink pipeline
+  and a replaceable receiver bin containing RTP/RTCP, parse, decode and recording.
+  Receiver ERROR/EOS no longer quits the application. EOS is intercepted at
+  the receiver output before it can terminate the fallback. Screen/output
+  errors and whole-output EOS remain explicit fatal failures.
+- Fault handling clears the exact-frame join, local video freshness and ROI
+  workflow, sends release/cancel and requires a fresh explicit operator lock.
+  Menus stay open. Generation guards reject old receiver callbacks. Graph edits
+  occur on the GLib/UI thread; replacement requires old decoder NULL ack.
+  Initial receiver startup is isolated from the black/output startup too.
+- Automatic rebuilds back off250ms,500ms,1s,2s,4s, then fail visibly after five
+  retries. Ten healthy seconds reset the burst. Persistent failure leaves the
+  UI alive, with Operations -> Reconnect video. Recovery state, attempts,
+  rebuilds, generation and last error are reported. Retired RTP observers
+  disconnect their bus handlers. Native recording finalization is polled,
+  preserving the existing2s bound without a UI-thread sleep.
+- Native trial development exposed/fixed actual Gst details: automatic bin
+  ghosting captured RTP's not-yet-linked dynamic sink; explicit decoded-source
+  ghosting fixes this. Input-selector pad names are allocated by the element,
+  so use the actual fallback peer plus a requested live pad, not assumed indices.
+  The old10fps fallback stalled on video-to-black transition with the hardware
+  converter; matched30fps fallback passed. Initial failed trials01-04 and their
+  source hashes/logs remain preserved, not counted as passes.
+- Controlled native trials05 and07 passed with normal exit0 on the Pi,
+  GStreamer1.26.2, real v4l2h264dec/v4l2convert/Wayland,640x360@30 CPU-generated
+  H264/RTP. Three senders used SSRC70001/70002/70003. Two sender changes
+  reproduced the real not-linked(-1) error; both recovered, as did explicit EOS
+  and a posted receiver error. Final07 kept PID121641/display pipeline unchanged
+  through four receiver rebuilds,150 decoded and536 output frames,19.21s total.
+  Maximum output gap559.45ms includes the test's intentional500ms freshness wait.
+  Every1.2s sender pause still produced at least21 fallback/output frames.
+  Sender-change timings3.50/3.51s include recording finalization AND waiting for
+  30 decoded frames; they are not first-frame or photon latency measurements.
+- All five recorded native05 MKV segments start at0.000s, contain30/31 H264
+  frames, and decode completely with the CPU h264 decoder without errors.
+  Native05 recording-validation.json records each file. Final07 repeats the
+  recording-enabled scenario with the final runtime bytes.
+- Full operator-display/live-camera trials06 and08 passed with normal exit0.
+  Trial08 PID121725 remained the same across receiver ERROR at4s and EOS at12s;
+  its open menu survived both, local ROI/video gates were invalidated, and the
+  20s report showed two rebuilds,30.12fps and overlay p95 9.34ms. The Jetson camera
+  source was never switched or restarted. Active-lock invalidation is separately
+  contract-tested; full UI trials did not inject a physical switch or live ROI.
+- Each bounded trial paused only the previously active display unit and
+  restored deploy-109 in finally; final07/08 also held an explicit exclusive
+  Pi trial lock. GPIO process PID120170
+  stayed unchanged. Final display restore PID121777. Jetson/PC source services,
+  physical/HIL units and GPIO authority were not modified. Trial source is
+  `IDCS-trials/display-recovery-20261021-01`; evidence is under
+  `deployments/display-recovery-20261021-01` through `-08` on Pi, with native07
+  and full-app08 recording the final runtime SHA256 hashes.
+- Validation: Windows focused recovery/ROI/identity/RTP/recording set274 passed,
+  32 skipped (missing real gi/cairo),10.48s. Real Pi managed-style unittest
+  modules86 passed,5.225s. Final native/full-UI repeats qualify actual Gst usage.
+  All generated files are outside source. No detector-quality, transit-time,
+  physical-switch, motor or long-endurance acceptance is claimed.
+- Recovery and earlier menu hardening remain uncommitted/undeployed, pending
+  explicit commit approval and a clean managed release. Running services were
+  restored to deploy-109, so current production still has the old recovery
+  behavior until that rollout. No test owner was left running.
+
+## 2026-10-21 - deploy-110 authorized and prepared
+
+- User authorized deployment, testing and commit of receiver recovery and the
+  preceding seamless-ROI menu hardening. Release110 is based on `5c18912`.
+  No version-controlled configuration or native/model source changed.
+- Added the receiver lifecycle, native RTP and Pi recording regression modules
+  to managed PC/Jetson validation so subsequent deployments retain these gates.
+- Final precommit Windows gate, including deployment safeguards:321 passed,
+  32 optional-platform skips,10.95s. Native/full-display qualification from the
+  previous entry uses the same runtime source bytes. Rollout receipt follows
+  after stage, platform validation, ordered activation and live acceptance.

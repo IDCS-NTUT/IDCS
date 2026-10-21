@@ -4,6 +4,10 @@ Code/document cross-reference: 2026-10-17. This is the current implementation
 description; the [previous document](archive/controller-architecture-before-20261011-review.md)
 is retained as historical evidence.
 
+Proposed process/backend consolidation is specified in the
+[resident runtime migration plan](resident_runtime_migration_plan.md).
+It is not the deployed service topology described here.
+
 ## Ownership and signal path
 
 ```text

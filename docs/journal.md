@@ -1739,3 +1739,36 @@ HIL target are inactive. No trial unit remains active.
   current launch/menu/controller/config-stack guidance; legacy dynamic graph and
   check_seamless_roi's release-to-detector contract explicitly marked historical.
   Documentation-only follow-up does not move the deployed code tag.
+
+## 2026-10-21 - comprehensive resident runtime migration plan
+
+- User requested a plan covering all features/services after reviewing the26
+  services and restart-based source groups. Added
+  docs/resident_runtime_migration_plan.md and a short task-reference link.
+  Planning only: no application code, unit/config, service state, deployment,
+  hardware, commit or push changes in this task.
+- Proposed final ownership: Jetson6, PC5, Pi2 (13 roles). Jetson controller and
+  fake/real/disabled bridge share the operational control path; PC renders
+  selected-backend pose without a second plant/controller. Stable fake motion
+  has independent SIM settings, not bench gains/F6 quantization.
+- Maps all26 current services and6 groups; inventories operator/menu/panel,
+  YOLO/NvDCF/ROI, planner/ranging/parallax, PID/FF, timing, HUD, score/error,
+  recording, live config, serial, recovery and useful maintenance tools.
+  Explicit source/processing/backend/profile generations, real stop/queue
+  fencing, alignment, panel authority and requested/applied receipts prevent
+  process residency being mistaken for safe motion authority.
+- Added ordered P0-P7 work packages, file/module boundaries, software acceptance
+  matrix, warm-source resource/plugin-reset investigation gates, bounded and
+  endurance tests, unit-inventory migration and rollback/removal policy. Real
+  activation remains behind the existing wiring/RS485/bench gate. No automatic
+  real/fake fallback, homing, synthetic physical availability or truth-driven
+  operational control is permitted by the proposed design.
+- Planning identifies two important migration traps: moving SIM control onto
+  Jetson adds a pose-network timing leg; old serial queues also need epoch
+  fencing, not only the bridge. No unmeasured zero-latency or universal seamless
+  cold model/source startup claim. Existing deployed YOLO/ROI mode switch is
+  preserved rather than rebuilt.
+- Plan checks: PC14 and Jetson10 service mappings exactly match installed-unit
+  templates; Pi2 are retained explicitly. Relative document links resolve and
+  git diff --check passes. Software tests were not rerun for this documentation-
+  only change; proposed acceptance thresholds and phases are not test results.

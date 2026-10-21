@@ -21,6 +21,8 @@
 - Operations: `docs/launch_procedure.md`; panel/menu:
   `docs/operator_display.md`; config: `docs/configuration_architecture.md`.
 - Controller: `docs/controller_architecture.md`, `docs/tuning_procedure.md`.
+- Proposed resident service migration: `docs/resident_runtime_migration_plan.md`;
+  this is a plan, not deployed behavior or hardware activation authority.
 - Verification: read `docs/verification_strategy.md`; record results in
   `docs/journal.md` (newest entries at the end). The closed
   `docs/deepstream_migration_journal.md` holds entries up to 2026-10-19.

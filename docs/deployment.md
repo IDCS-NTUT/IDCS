@@ -4,7 +4,24 @@ This document replaces source-path claims in historical handovers. A release
 being present, a Git tag being fetched, and a process actually using it are
 different states. Repository synchronization is separate from deployment.
 
-## Last recorded deployment (2026-10-20, deploy-104)
+## Last recorded deployment (2026-10-21, deploy-107)
+
+Commit `c87e023` / tag `deploy-107` is installed on PC, Jetson and Pi. On top
+of deploy-105 it carries seamless ROI (YOLO <-> visual lock in the DeepStream
+runtime) with `deepstream.seamless_roi: false` (the one reviewed config
+addition), the duplicate track-id fix in the snapshot builder, and a
+StateDirectory for ROI evidence in both DeepStream units. Tag `deploy-106`
+(`b18fc78`) was staged but never activated: Jetson validation failed a
+test-only fake (`test_operator_menu`, fixed in 107). Jetson activation first
+refused on a stale `NRestarts=1` of `idcs-visual-lock-sim` (SIM trials; cleared
+with reset-failed), then needed plan+validate again. That first attempt's
+DeepStream restart made the PC `idcs-camera-ui` exit cleanly on return-stream
+loss (no restart), so the agent reported mode "mixed" and the Pi HUD
+UNAVAILABLE until Camera mode was reselected; the Pi gate then passed.
+Validation PC 375/4 skipped, Jetson 398, Pi 82; audit: all units reference
+deploy-107. Physical units inactive.
+
+## Earlier deployment (2026-10-20, deploy-104)
 
 Commit `70f2ddb` / tag `deploy-104` is installed on PC, Jetson and Pi. On top
 of deploy-102 it fixes the camera visual-lock unit (no PrivateTmp; deploy-103

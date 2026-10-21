@@ -1233,3 +1233,19 @@ HIL target are inactive. No trial unit remains active.
 - Merged `lab/seamless-roi-v7` into integrate-99/main. `deepstream.seamless_roi`
   stays false; enabling it live (and a Pi panel Select box test in Camera
   mode) is a separate, bench-attended step.
+
+## 2026-10-21 - deploy-107 (seamless ROI, off) on all hosts
+
+- deploy-106 (`b18fc78`) staged only: Jetson validation failed
+  `test_roi_lock_survives_late_image_metadata_but_releases_stale_receiver`
+  (fake status lacked `agent_state`; PC skips the module). Fixed in `c87e023`,
+  tagged deploy-107; 106 never activated, tag left in place.
+- Jetson activation: stale `NRestarts=1` on idcs-visual-lock-sim from SIM trials
+  refused verify (reset-failed), then plan+validate+activate passed.
+- Side effect: the first attempt's DeepStream restart made PC `idcs-camera-ui`
+  exit on return-stream loss with success (no restart) -> agent mode "mixed",
+  Pi HUD UNAVAILABLE. Reselecting Camera fixed it. Same class as the Pi display
+  exiting on video loss (proposed fix: keep UI processes alive / restart on
+  video loss).
+- Live: Jetson 59 fps, Pi 30 fps CAMERA, overlay p95 3.7 ms, recording on.
+  `seamless_roi` false; enabling + Pi panel Select box test awaits the bench.

@@ -221,7 +221,10 @@ def build_menu(status: SystemStatus, settings: Settings, config: DisplayConfig,
                 Action(m["label"], lambda name=m["name"]: send(OperatorCommand("set_mode", mode=name)),
                        confirm=f"Switch to {m['label']}?", key=("mode", m["name"]),
                        value="current" if m["name"] == current else None)
-                for m in state.get("modes") or () if isinstance(m, dict) and "name" in m and m["name"] != "sim_visual_lock"]
+                for m in state.get("modes") or () if isinstance(m, dict) and "name" in m and m["name"] != "sim_visual_lock"
+                # Seamless ROI (Targets -> Select box) replaces the managed
+                # fallback; offering both made "activate ROI" stop DeepStream.
+                and not (m["name"] == "camera_visual_lock" and seamless_roi())]
 
     def class_items() -> list[Action]:
         state = status.agent_state

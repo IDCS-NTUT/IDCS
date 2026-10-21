@@ -492,9 +492,9 @@ def main():
             if deadline is not None and time.monotonic() >= deadline:
                 break
             now = time.time()
-            if cap is not None and cap.eos:
-                stop_event.set()
-                break
+            # A return-stream error/EOS is a source gap (mode switch, runtime
+            # restart), not the end of the UI: drop the capture and reopen it
+            # below. Exiting here left Camera mode unready (agent "mixed").
             if (cap is None or not cap.isOpened()) and (now - last_cap_open) > 0.5:
                 if cap is not None:
                     try:
@@ -516,9 +516,6 @@ def main():
                 last_cap_open = now
 
             okv, video = (cap.read() if cap and cap.isOpened() else (False, None))
-            if cap is not None and cap.eos:
-                stop_event.set()
-                break
             if stop_event.is_set():
                 break
             if okv and video is not None:

@@ -273,6 +273,12 @@ class OperatorMenuTests(unittest.TestCase):
         self.assertEqual([r.label for r in view.rows], ["Camera", "Simulator", "Camera / Visual lock", "Standby"])
         self.assertEqual(view.rows[0].value, "current")
 
+    def test_seamless_roi_hides_managed_camera_visual_lock(self):
+        state = dict(self.status.agent_state, roi_capable=True)
+        self.status.on_agent(state, time.monotonic())
+        self.menu.handle(NavEvent.RIGHT)  # Source & scene
+        self.assertEqual([r.label for r in self.menu.view().rows], ["Camera", "Simulator", "Standby"])
+
     def test_sim_action_requires_confirm_and_sends_correct_command(self):
         self.menu.handle(NavEvent.RIGHT)
         self.menu.handle(NavEvent.DOWN)

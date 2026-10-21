@@ -1772,3 +1772,22 @@ HIL target are inactive. No trial unit remains active.
   templates; Pi2 are retained explicitly. Relative document links resolve and
   git diff --check passes. Software tests were not rerun for this documentation-
   only change; proposed acceptance thresholds and phases are not test results.
+
+## 2026-10-21 - merge resident ROI branch into local main
+
+- User requested current-branch merge first, then proceed. Committed the
+  comprehensive migration plan/reference/journal changes as f6c727b with Codex
+  author/committer/trailer. Local main was stale but had no independent commits;
+  fast-forwarded it to fix/seamless-roi-menu-20261021 at f6c727b without conflicts.
+  This includes the already validated deploy-110/deploy-111 work and receipts.
+- origin/main was confirmed at5c18912; only five commits are new relative to
+  that shared remote. Its push URL is the internal39.68 SSH repository, not
+  GitHub. The root server checkout is clean on live-config; main is not checked
+  out by any listed server worktree. Existing branches/worktrees were preserved.
+- Remote sync command was rejected before execution by approval review as a
+  potentially unauthorized default-branch/GitHub push. No push occurred and no
+  workaround was used. Shared remote main remains5c18912 pending explicit
+  approval; GitHub and deployed immutable deploy-111 sources are unchanged.
+- Local merge has identical code to the validated branch; documentation links,
+  complete service mappings and diff whitespace checks passed. No GPU/hardware
+  tests or service restarts were needed/performed for the fast-forward and plan.

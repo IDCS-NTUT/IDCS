@@ -35,7 +35,7 @@ on Jetson, sender reports5004 on receivers. See [visual_lock.md](visual_lock.md)
 for candidate status, configurable ports and all-IDR fallback. This is not a
 claim that managed services have been upgraded or camera ROI is available.
 
-### Pi receiver recovery (tested candidate, not yet deployed)
+### Pi receiver recovery (deployed in deploy-110)
 
 The display separates the UDP/RTCP/depay/decoder/recording receiver bin from
 the persistent black source, selector, colour conversion, overlay and screen
@@ -59,8 +59,8 @@ existing2s bound; the replacement waits for it. Resumed recording starts at a
 fresh keyframe. The fallback runs30fps to match the return feed and avoid the
 10-to30fps converter renegotiation observed in the trial. Controlled SSRC,
 EOS/error and full live-camera display trials passed on the Pi; see the newest
-journal entry. Recovery and the menu hardening still require an explicitly
-approved commit and managed deployment.
+journal entry. Deploy-110 also passed live Camera -> Simulator -> Camera
+switching with the same Pi display PID and zero automatic service restarts.
 
 The scene menu, introduced in `deploy-81` (`0ce7a11`), is now under
 **Operations -> Source & scene -> Simulator -> Single / Swarm**, with
@@ -107,8 +107,8 @@ Five bounded live-camera seed/track/release cycles passed on 2026-10-21 with
 unchanged DeepStream/Pi PIDs, tracker session and return RTP sender. This is
 software protocol acceptance, not physical joystick/switch or moving-target
 qualification; see `docs/journal.md` for evidence and the remaining display
-restart on a genuine source-mode change. The additional menu hardening below
-is not in deploy-109 until a subsequent managed release is activated.
+restart on a genuine source-mode change in deploy-109. Deploy-110's receiver
+recovery and unconditional menu hardening address both issues.
 
 ## Managed visual lock fallback (2026-10-20)
 
@@ -118,8 +118,8 @@ available to maintenance tools, not the normal operator menu. Use
 **Targets -> Select box / Release** in Camera or Simulator instead. A temporary
 loss of ROI capability must not offer a restart-based fallback. Actual Camera /
 Simulator scene changes still use the ordered source transaction and rollback.
-Nothing starts motors. Deploy-109 hides the camera fallback while seamless
-capability is fresh; the follow-up menu patch removes both fallbacks regardless
+Nothing starts motors. Deploy-109 hid the camera fallback while seamless
+capability was fresh; deploy-110 removes both fallbacks regardless
 of capability, including Simulator's nested Visual lock action.
 
 In either mode, Targets contains **Select box**, **Release** and **Box size**

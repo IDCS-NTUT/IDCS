@@ -4,7 +4,39 @@ This document replaces source-path claims in historical handovers. A release
 being present, a Git tag being fetched, and a process actually using it are
 different states. Repository synchronization is separate from deployment.
 
-## Last recorded deployment (2026-10-21, deploy-109)
+## Last recorded deployment (2026-10-21, deploy-110)
+
+Code commit `a79a9b9` / tag `deploy-110` is installed on PC, Jetson and Pi from
+`~/Desktop/project/IDCS-releases/deploy-110`. It removes restart-based ROI source
+choices from the operator menu and adds receiver-only Pi video recovery while
+keeping the screen/menu/status process alive. Models/native sources and
+version-controlled configuration did not change; reused native libraries have
+matching SHA256 hashes. The redundant Jetson live `deepstream.seamless_roi: true`
+override was archived and removed through the config agent; the release default
+remains true. Every plan reports zero configuration differences.
+
+Managed validation: PC402 passed/6 skipped, Jetson431 passed, Pi86 unittest
+cases passed. Activation was Pi -> PC -> Jetson, with unit backups and initial
+verification on each host. Repeat post-acceptance verification and reference
+audit passed on all hosts. All unit/process sources reference deploy-110, with
+no automatic service restarts or unmanaged source overrides.
+
+Live Camera -> Simulator/Single -> Camera acceptance kept Pi display PID122322
+and NRestarts0. Receiver rebuild count advanced1 ->2 ->3, recovering the actual
+not-linked sender-change faults without restarting the application. Return
+video was28.5fps in SIM and30.1fps after returning to Camera. Three subsequent
+three-second camera ROI locks/releases all passed with camera PID168302,
+tracker session and RTP SSRC unchanged; no additional Pi receiver rebuilds.
+The current source is normal Camera. Motor/HIL services remain inactive.
+
+Host manifests and exact logs are authoritative. Rollout and live evidence:
+`~/Desktop/project/deployments/managed/deploy-110/<role>/` and
+`~/Desktop/project/deployments/seamless-roi-fix-20261021/deploy110-live-acceptance/`.
+Old sources, trials, native/model stores and rollback evidence were retained.
+This qualifies software rollout/recovery/ROI switching, not physical panel,
+motor, detector-quality, endurance or photon/transit timing.
+
+## Earlier deployment (2026-10-21, deploy-109)
 
 PC and Jetson were already running `5c18912` / deploy-109 while Pi still ran
 deploy-107. Pi deploy-109 had been staged and validated but never activated.

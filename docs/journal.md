@@ -1382,3 +1382,49 @@ HIL target are inactive. No trial unit remains active.
   32 optional-platform skips,10.95s. Native/full-display qualification from the
   previous entry uses the same runtime source bytes. Rollout receipt follows
   after stage, platform validation, ordered activation and live acceptance.
+
+## 2026-10-21 - deploy-110 installed and live acceptance passed
+
+- Runtime commit `a79a9b956bdb440d9b174bae7078b04ed527d362`, tag `deploy-110`,
+  installed on PC/Jetson/Pi from their immutable IDCS-releases/deploy-110 trees.
+  Local source branch is `fix/seamless-roi-menu-20261021`; the isolated PC Linux
+  deployment checkout is `IDCS-wt-deploy110` (release/deploy-110). Existing dirty
+  worktrees and the separate integration checkout were not reset or advanced.
+- Archived the redundant Jetson live ROI override under
+  `deployments/seamless-roi-fix-20261021/deploy110-jetson-overlay-before.yaml`,
+  then removed it through the config agent. Base ROI remains enabled. Plans
+  report zero version-controlled config differences on all roles. Parser/model
+  links retain existing targets, and copied native visual-lock libraries have
+  identical SHA256 hashes to deploy-109; no native/model source changed.
+- Managed validation: PC402 passed/6 skipped (8 subtests,11.10s), Jetson431
+  passed(16.57s), Pi86 unittest cases passed(5.223s). An early Pi activation
+  invocation was safely refused before its validation receipt existed; no
+  units changed. After all platform receipts passed, activation was ordered
+  Pi -> PC -> Jetson, with exact unit backups and initial per-host verification.
+  Repeat verification and reference audit after live tests passed all hosts.
+- Updating Jetson first exercised a real sender change against the newly
+  installed Pi app: not-linked(-1) triggered receiver rebuild1, not process
+  exit. Deployed Camera -> Simulator/Single -> Camera then exercised rebuilds
+  2 and3. Pi display PID122322 remained identical throughout, NRestarts0;
+  recording stayed requested and return video recovered to28.52fps in SIM and
+  30.12fps in Camera. The managed GPIO owner stayed PID122299 during acceptance.
+- Three explicit three-second camera ROI locks/releases passed with128,133,133
+  selected observations and detector return each time. Camera PID168302,
+  tracker session02108d6cd8234cdc9460a44d5313194e and SSRC1107174390 stayed
+  unchanged; camera NRestarts0. Pi PID/rebuild count stayed122322/3 during ROI.
+  Command-to-first-selected273.37ms cold,127.49/133.18ms warm; release-to-detector
+  30.49/43.92/2.05ms. These are local protocol timings, not display/transit bounds.
+- Final authoritative manifests: all software source paths deploy-110, all
+  automatic restart counters0, no source overrides. Jetson video57.96fps,
+  return29.40fps, roi_error null; Pi30.29fps, overlay p95 3.07ms, receiver live.
+  Current source is normal Camera. Dedicated visual-lock/SIM services and all
+  physical/HIL services are inactive; the camera controller remains shadow-only.
+- Evidence/coordinator/scripts are retained outside source under PC
+  `deployments/seamless-roi-fix-20261021/`; live report and exact ROI reports are
+  in its `deploy110-live-acceptance/`. Managed plans, tests, rollback, verification
+  and audits are under each host's `deployments/managed/deploy-110/<role>/`.
+  No previous releases, trials, recordings, model/native stores or useful scripts
+  were deleted. No trial owner remains active.
+- Code release tag is unchanged by this documentation-only receipt commit.
+  No GitHub push was requested/performed. This is software rollout/recovery/ROI
+  acceptance, not physical-panel, hardware, detector-quality or endurance proof.

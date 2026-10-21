@@ -26,6 +26,9 @@ if [[ $PHASE == stage ]]; then
 fi
 tar -C "$REPO" -cf "$TASK_TMP/templates.tar" deploy/systemd
 # IDCS_CONFIG_POLICY: reviewed config before/after hashes for this release, used by stage/plan.
+# IDCS_LIVE_OVERLAY=folded|discard: stage decision for a non-empty live overlay.
+case ${IDCS_LIVE_OVERLAY:-} in ''|folded|discard) ;; *) echo 'IDCS_LIVE_OVERLAY must be folded or discard' >&2; exit 2 ;; esac
+OVERLAY_ARG=${IDCS_LIVE_OVERLAY:+--live-overlay $IDCS_LIVE_OVERLAY}
 POLICY=${IDCS_CONFIG_POLICY:-}
 [[ -z $POLICY || -f $POLICY ]] || { echo "no config policy file $POLICY" >&2; exit 2; }
 for HOST in ${HOSTS//,/ }; do
@@ -40,7 +43,7 @@ for HOST in ${HOSTS//,/ }; do
     [[ -n $POLICY_ARG ]] && cp "$POLICY" "$DEST/config-policy.json"
     if [[ $PHASE == stage ]]; then
       cp "$TASK_TMP/release.bundle" "$DEST/release.bundle"
-      "$PYTHON" "$DEST/deployment.py" stage --role pc --release "$TAG" --templates "$DEST/deploy/systemd" --bundle "$DEST/release.bundle" --commit "$COMMIT" $POLICY_ARG
+      "$PYTHON" "$DEST/deployment.py" stage --role pc --release "$TAG" --templates "$DEST/deploy/systemd" --bundle "$DEST/release.bundle" --commit "$COMMIT" $POLICY_ARG $OVERLAY_ARG
     else
       "$PYTHON" "$DEST/deployment.py" "$PHASE" --role pc --release "$TAG" --templates "$DEST/deploy/systemd" $POLICY_ARG
     fi
@@ -51,7 +54,7 @@ for HOST in ${HOSTS//,/ }; do
     ssh -i "$KEY" "$REMOTE" "tar -xf '$DEST/templates.tar' -C '$DEST'"
     if [[ $PHASE == stage ]]; then
       scp -i "$KEY" "$TASK_TMP/release.bundle" "$REMOTE:$DEST/release.bundle"
-      ssh -i "$KEY" "$REMOTE" "'$PYTHON' '$DEST/deployment.py' stage --role '$HOST' --release '$TAG' --templates '$DEST/deploy/systemd' --bundle '$DEST/release.bundle' --commit '$COMMIT' $POLICY_ARG"
+      ssh -i "$KEY" "$REMOTE" "'$PYTHON' '$DEST/deployment.py' stage --role '$HOST' --release '$TAG' --templates '$DEST/deploy/systemd' --bundle '$DEST/release.bundle' --commit '$COMMIT' $POLICY_ARG $OVERLAY_ARG"
     else
       ssh -i "$KEY" "$REMOTE" "'$PYTHON' '$DEST/deployment.py' '$PHASE' --role '$HOST' --release '$TAG' --templates '$DEST/deploy/systemd' $POLICY_ARG"
     fi

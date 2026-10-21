@@ -48,7 +48,8 @@ deepstream:
   # runs with --verified-rtp-headers), so a controller consuming these
   # snapshots gets verified frame identity instead of order-based matching.
   verified_rtp_headers: true
-  # Opt-in until idle off/on/off/on timing equality is measured on Jetson.
-  # Idle has no waits/copies/VPI; enabled queue/metadata layout still differs.
-  # Missing release libraries withdraw ROI capability while YOLO keeps running.
-  seamless_roi: false
+  # Resident ROI (Targets -> Select box without a mode switch). On since
+  # deploy-109: Jetson idle off/on/off/on equal (60.2 fps, +0.06-0.09 ms), 8/8
+  # back-to-back locks. Missing release libraries withdraw ROI capability while
+  # YOLO keeps running.
+  seamless_roi: true
